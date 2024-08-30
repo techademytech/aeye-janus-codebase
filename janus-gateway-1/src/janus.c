@@ -285,7 +285,7 @@ static json_t *janus_create_message(const char *status, uint64_t session_id, con
  * polling mechanism is used and shorten them as well, or you'll risk
  * incurring in unexpected timeouts (when HTTP is used in janus.js, the
  * long poll is used as a keepalive mechanism). */
-#define DEFAULT_SESSION_TIMEOUT		60
+#define DEFAULT_SESSION_TIMEOUT		300
 static uint global_session_timeout = DEFAULT_SESSION_TIMEOUT;
 
 #define DEFAULT_RECLAIM_SESSION_TIMEOUT		0
