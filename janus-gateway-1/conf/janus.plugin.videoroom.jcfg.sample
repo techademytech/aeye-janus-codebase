@@ -76,6 +76,7 @@ room-1234: {
 	#audiocodec = "opus"
 	#videocodec = "vp8"
 	record = false
+	simulcast : true
 	#rec_dir = "/path/to/recordings-folder"
 }
 
