@@ -101,12 +101,12 @@ int janus_pp_opus_create(char *destination, char *metadata, gboolean multiopus, 
 // It assumes ALL the packets are of the 20ms kind
 #define OPUS_PACKET_DURATION 48 * 20;
 
-int janus_pp_opus_process(FILE *file, janus_pp_frame_packet *list, int *working) {
+int janus_pp_opus_process(FILE *file, janus_pp_frame_packet *list, gboolean restamping, int *working) {
 	if(!file || !list || !working)
 		return -1;
 	janus_pp_frame_packet *tmp = list;
 	long int offset = 0;
-	int bytes = 0, len = 0, steps = 0, last_seq = 0;
+	int bytes = 0, len = 0, last_seq = 0;
 	uint64_t pos = 0, nextPos = 0;
 	double ts = 0.0;
 	uint8_t *buffer = g_malloc0(1500);
@@ -251,7 +251,8 @@ int janus_pp_opus_process(FILE *file, janus_pp_frame_packet *list, int *working)
 	AVRational timebase = {1, 48000};
 
 	while(*working && tmp != NULL) {
-		if(tmp->prev != NULL && ((tmp->ts - tmp->prev->ts)/48/20 > 1) && (tmp->seq != tmp->prev->seq+1)) {
+		/* if restamping is being used, do not evaluate the sequence number jump */
+		if(tmp->prev != NULL && ((tmp->ts - tmp->prev->ts)/48/20 > 1) && (restamping || (tmp->seq != tmp->prev->seq+1))) {
 			JANUS_LOG(LOG_WARN, "Lost a packet here? (got seq %"SCNu16" after %"SCNu16", time ~%"SCNu64"s)\n",
 				tmp->seq, tmp->prev->seq, (tmp->ts-list->ts)/48000);
 			/* use ts differ to insert silence packet */
@@ -319,7 +320,6 @@ int janus_pp_opus_process(FILE *file, janus_pp_frame_packet *list, int *working)
 			last_seq = tmp->seq;
 		if(tmp->seq < last_seq) {
 			last_seq = tmp->seq;
-			steps++;
 		}
 		JANUS_LOG(LOG_VERB, "pos: %06"SCNu64", writing %d bytes out of %d (seq=%"SCNu16", step=%"SCNu16", ts=%"SCNu64", time=%"SCNu64"s)\n",
 			pos, bytes, tmp->len, tmp->seq, diff, tmp->ts, (tmp->ts-list->ts)/48000);

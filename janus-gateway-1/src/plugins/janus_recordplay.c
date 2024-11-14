@@ -778,8 +778,6 @@ static void janus_recordplay_message_free(janus_recordplay_message *msg) {
 #define JANUS_RECORDPLAY_ERROR_RECORDING_EXISTS		420
 #define JANUS_RECORDPLAY_ERROR_UNKNOWN_ERROR		499
 
-#define ntohll(x) ((1==ntohl(1)) ? (x) : ((gint64)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
-
 /* Plugin implementation */
 int janus_recordplay_init(janus_callbacks *callback, const char *config_path) {
 	if(g_atomic_int_get(&stopping)) {
@@ -1304,7 +1302,8 @@ void janus_recordplay_incoming_rtp(janus_plugin_session *handle, janus_plugin_rt
 		uint32_t ssrc = ntohl(header->ssrc);
 		/* Process this packet: don't save if it's not the SSRC/layer we wanted to handle */
 		gboolean save = janus_rtp_simulcasting_context_process_rtp(&session->sim_context,
-			buf, len, session->ssrc, session->rid, session->recording->vcodec, &session->context, &session->rid_mutex);
+			buf, len, NULL, 0, session->ssrc, session->rid, session->recording->vcodec,
+			&session->context, &session->rid_mutex);
 		if(session->sim_context.need_pli) {
 			/* Send a PLI */
 			JANUS_LOG(LOG_VERB, "We need a PLI for the simulcast context\n");
@@ -1879,10 +1878,6 @@ recdone:
 					janus_mutex_unlock(&session->rid_mutex);
 					session->sim_context.substream_target = 2;	/* Let's aim for the highest quality */
 					session->sim_context.templayer_target = 2;	/* Let's aim for all temporal layers */
-					if(rec->vcodec != JANUS_VIDEOCODEC_VP8 && rec->vcodec != JANUS_VIDEOCODEC_H264) {
-						/* VP8 r H.264 were not negotiated, if simulcasting was enabled then disable it here */
-						janus_rtp_simulcasting_cleanup(NULL, session->ssrc, session->rid, &session->rid_mutex);
-					}
 					/* FIXME We're stopping at the first item, there may be more */
 					break;
 				}
@@ -2208,7 +2203,6 @@ void janus_recordplay_update_recordings_list(void) {
 			janus_config_destroy(nfo);
 			/* Mark that we updated this recording */
 			old_recordings = g_list_remove(old_recordings, &rec->id);
-			janus_refcount_decrease(&rec->ref);
 			continue;
 		}
 		janus_config_item *name = janus_config_get(nfo, cat, janus_config_type_item, "name");
@@ -2532,7 +2526,7 @@ janus_recordplay_frame_packet *janus_recordplay_get_frames(const char *dir, cons
 				JANUS_LOG(LOG_WARN, "Missing data timestamp header");
 				break;
 			}
-			when = ntohll(when);
+			when = ntohll((uint64_t)when);
 			offset += sizeof(gint64);
 			len -= sizeof(gint64);
 			/* Generate frame packet and insert in the ordered list */
@@ -2625,7 +2619,7 @@ janus_recordplay_frame_packet *janus_recordplay_get_frames(const char *dir, cons
 						p->prev = tmp;
 						break;
 					} else if(tmp->seq > p->seq && (abs(tmp->seq - p->seq) > 10000)) {
-						/* The new sequence number (resetted) is greater than the last one we have, append */
+						/* The new sequence number (reset) is greater than the last one we have, append */
 						added = 1;
 						if(tmp->next != NULL) {
 							/* We're inserting */
@@ -2640,7 +2634,7 @@ janus_recordplay_frame_packet *janus_recordplay_get_frames(const char *dir, cons
 						break;
 					}
 				}
-				/* If either the timestamp ot the sequence number we just got is smaller, keep going back */
+				/* If either the timestamp or the sequence number we just got is smaller, keep going back */
 				tmp = tmp->prev;
 			}
 			if(!added) {

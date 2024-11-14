@@ -28,6 +28,7 @@
 #include <jansson.h>
 
 #include "plugins/plugin.h"
+#include "utils.h"
 
 #define RTP_HEADER_SIZE	12
 
@@ -52,7 +53,7 @@ typedef struct rtp_header
 	uint16_t seq_number;
 	uint32_t timestamp;
 	uint32_t ssrc;
-	uint32_t csrc[16];
+	uint32_t csrc[0];
 } rtp_header;
 typedef rtp_header janus_rtp_header;
 
@@ -71,12 +72,31 @@ typedef struct janus_rtp_header_extension {
 	uint16_t length;
 } janus_rtp_header_extension;
 
+/*! \brief RTP RFC2833 payload */
+typedef struct janus_rtp_rfc2833_payload {
+#if __BYTE_ORDER == __BIG_ENDIAN
+	uint8_t event;
+	uint8_t end:1;
+	uint8_t reserved:1;
+	uint8_t volume:6;
+	uint16_t duration;
+#elif __BYTE_ORDER == __LITTLE_ENDIAN
+	uint8_t event;
+	uint8_t volume:6;
+	uint8_t reserved:1;
+	uint8_t end:1;
+	uint16_t duration;
+#endif
+} janus_rtp_rfc2833_payload;
+
 /*! \brief a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level */
 #define JANUS_RTP_EXTMAP_AUDIO_LEVEL		"urn:ietf:params:rtp-hdrext:ssrc-audio-level"
 /*! \brief a=extmap:2 urn:ietf:params:rtp-hdrext:toffset */
 #define JANUS_RTP_EXTMAP_TOFFSET			"urn:ietf:params:rtp-hdrext:toffset"
 /*! \brief a=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time */
 #define JANUS_RTP_EXTMAP_ABS_SEND_TIME		"http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"
+/*! \brief a=extmap:7 http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time */
+#define JANUS_RTP_EXTMAP_ABS_CAPTURE_TIME	"http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time"
 /*! \brief a=extmap:4 urn:3gpp:video-orientation */
 #define JANUS_RTP_EXTMAP_VIDEO_ORIENTATION	"urn:3gpp:video-orientation"
 /*! \brief a=extmap:5 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01 */
@@ -105,7 +125,9 @@ typedef enum janus_audiocodec {
 	JANUS_AUDIOCODEC_PCMA,
 	JANUS_AUDIOCODEC_G722,
 	JANUS_AUDIOCODEC_ISAC_32K,
-	JANUS_AUDIOCODEC_ISAC_16K
+	JANUS_AUDIOCODEC_ISAC_16K,
+	JANUS_AUDIOCODEC_L16_48K,
+	JANUS_AUDIOCODEC_L16_16K
 } janus_audiocodec;
 const char *janus_audiocodec_name(janus_audiocodec acodec);
 janus_audiocodec janus_audiocodec_from_name(const char *name);
@@ -218,7 +240,7 @@ int janus_rtp_header_extension_parse_dependency_desc(char *buf, int len, int id,
  * @param[in] id The extension ID to look for
  * @param[out] abs_ts Variable where the parsed abs-send-time value will be stored
  * @returns 0 if found, -1 otherwise */
-int janus_rtp_header_extension_parse_abs_sent_time(char *buf, int len, int id, uint32_t *abs_ts);
+int janus_rtp_header_extension_parse_abs_send_time(char *buf, int len, int id, uint32_t *abs_ts);
 
 /*! \brief Helper to set an abs-send-time RTP extension (http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time)
  * @param[in] buf The packet data
@@ -227,6 +249,22 @@ int janus_rtp_header_extension_parse_abs_sent_time(char *buf, int len, int id, u
  * @param[out] abs_ts Absolute Send Time value to set
  * @returns 0 if found, -1 otherwise */
 int janus_rtp_header_extension_set_abs_send_time(char *buf, int len, int id, uint32_t abs_ts);
+
+/*! \brief Helper to parse an abs-capture-time RTP extension (http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time)
+ * @param[in] buf The packet data
+ * @param[in] len The packet data length in bytes
+ * @param[in] id The extension ID to look for
+ * @param[out] abs_ts Variable where the parsed abs-capture-time value will be stored
+ * @returns 0 if found, -1 otherwise */
+int janus_rtp_header_extension_parse_abs_capture_time(char *buf, int len, int id, uint64_t *abs_ts);
+
+/*! \brief Helper to set an abs-capture-time RTP extension (http://www.webrtc.org/experiments/rtp-hdrext/abs-capture-time)
+ * @param[in] buf The packet data
+ * @param[in] len The packet data length in bytes
+ * @param[in] id The extension ID to look for
+ * @param[out] abs_ts Absolute Send Time value to set
+ * @returns 0 if found, -1 otherwise */
+int janus_rtp_header_extension_set_abs_capture_time(char *buf, int len, int id, uint64_t abs_ts);
 
 /*! \brief Helper to parse a transport wide sequence number (https://tools.ietf.org/html/draft-holmer-rmcat-transport-wide-cc-extensions-01)
  * @param[in] buf The packet data
@@ -292,6 +330,54 @@ int janus_rtp_skew_compensate_audio(janus_rtp_header *header, janus_rtp_switchin
 int janus_rtp_skew_compensate_video(janus_rtp_header *header, janus_rtp_switching_context *context, gint64 now);
 
 
+/** @name Janus AV1-SVC processing methods
+ */
+///@{
+/*! \brief Helper struct for processing and tracking AV1-SVC streams */
+typedef struct janus_av1_svc_context {
+	/*! \brief Number of templates advertised via Dependency Descriptor */
+	uint8_t tcnt;
+	/*! \brief Template ID offset, as advertised via Dependency Descriptor */
+	uint8_t tioff;
+	/*! \brief Map of templates advertised via Dependency Descriptor, indexed by ID */
+	GHashTable *templates;
+	/*! \brief How many spatial and temporal layers are available */
+	int spatial_layers, temporal_layers;
+	/*! \brief Whether this context changed since the last update */
+	gboolean updated;
+} janus_av1_svc_context;
+
+/*! \brief Helper struct to track SVC templates
+ * \note This is very incomplete, since we only track the spatial and
+ * temporal layer associated with a specific template ID for now */
+typedef struct janus_av1_svc_template {
+	/*! \brief Template ID */
+	uint8_t id;
+	/*! \brief Spatial layer associated to this template */
+	int spatial;
+	/*! \brief Temporal layer associated to this template */
+	int temporal;
+} janus_av1_svc_template;
+
+/*! \brief Set (or reset) the context fields to their default values
+ * @param[in] context The context to (re)set */
+void janus_av1_svc_context_reset(janus_av1_svc_context *context);
+
+/*! \brief Process a Dependency Descriptor payload, updating the SVC context accordingly
+ * \note At the moment, this code is quite naive, as it mostly looks at the target
+ * spatial/temporal layers, and the one written in the Dependency Descriptor data.
+ * In the future, this should become more sophisticated, and use additional
+ * information like dependency chains and stuff like that
+ * @param[in] context The av1svc context to use
+ * @param[in] dd Pointer to the Dependency Descriptor data
+ * @param[in] dd_len The length of the Dependendy Descriptor data
+ * @param[out] template_id Pointer to the ID of the template referenced in this packet
+ * @param[out] ebit Whether this packet is an end of frame or not
+ * @returns TRUE if the packet is valid, FALSE if it should be dropped instead */
+gboolean janus_av1_svc_context_process_dd(janus_av1_svc_context *context,
+	uint8_t *dd, int dd_len, uint8_t *template_id, uint8_t *ebit);
+///@}
+
 /** @name Janus simulcast processing methods
  */
 ///@{
@@ -299,6 +385,8 @@ int janus_rtp_skew_compensate_video(janus_rtp_header *header, janus_rtp_switchin
 typedef struct janus_rtp_simulcasting_context {
 	/*! \brief RTP Stream extension ID, if any */
 	gint rid_ext_id;
+	/*! \brief Dependency Descriptors contexts, if any */
+	janus_av1_svc_context av1_context[3];
 	/*! \brief Which simulcast substream we should forward back */
 	int substream;
 	/*! \brief As above, but to handle transitions (e.g., wait for keyframe, or get this if available) */
@@ -345,6 +433,8 @@ void janus_rtp_simulcasting_cleanup(int *rid_ext_id, uint32_t *ssrcs, char **rid
  * @param[in] context The simulcasting context to use
  * @param[in] buf The RTP packet to process
  * @param[in] len The length of the RTP packet (header, extension and payload)
+ * @param[in] dd_content The Dependency Descriptor RTP extension data, if available
+ * @param[in] dd_len Length of the Dependency Descriptor data, if available
  * @param[in] ssrcs The simulcast SSRCs to refer to (may be updated if rids are involved)
  * @param[in] rids The simulcast rids to refer to, if any
  * @param[in] vcodec Video codec of the RTP payload
@@ -352,56 +442,56 @@ void janus_rtp_simulcasting_cleanup(int *rid_ext_id, uint32_t *ssrcs, char **rid
  * @param[in] rid_mutex A mutex that must be acquired before reading the rids array, if any
  * @returns TRUE if the packet should be relayed, FALSE if it should be dropped instead */
 gboolean janus_rtp_simulcasting_context_process_rtp(janus_rtp_simulcasting_context *context,
-	char *buf, int len, uint32_t *ssrcs, char **rids,
+	char *buf, int len, uint8_t *dd_content, int dd_len, uint32_t *ssrcs, char **rids,
 	janus_videocodec vcodec, janus_rtp_switching_context *sc, janus_mutex *rid_mutex);
 ///@}
 
-/** @name Janus AV1-SVC processing methods
+/** @name Janus SVC processing methods
  */
 ///@{
-/*! \brief Helper struct for processing and tracking AV1-SVC streams */
-typedef struct janus_av1_svc_context {
-	/*! \brief Number of templates advertised via Dependency Descriptor */
-	uint8_t tcnt;
-	/*! \brief Template ID offset, as advertised via Dependency Descriptor */
-	uint8_t tioff;
-	/*! \brief Map of templates advertised via Dependency Descriptor, indexed by ID */
-	GHashTable *templates;
-	/*! \brief How many spatial and temporal layers are available */
-	int spatial_layers, temporal_layers;
-	/*! \brief Whether this context changed since the last update */
-	gboolean updated;
-} janus_av1_svc_context;
-
-/*! \brief Helper struct to track SVC templates
- * \note This is very incomplete, since we only track the spatial and
- * temporal layer associated with a specific template ID for now */
-typedef struct janus_av1_svc_template {
-	/*! \brief Template ID */
-	uint8_t id;
-	/*! \brief Spatial layer associated to this template */
+/*! \brief Helper struct for processing and tracking VP9-SVC streams */
+typedef struct janus_rtp_svc_context {
+	/*! \brief Dependency Descriptor context, in case it's needed */
+	struct janus_av1_svc_context dd_context;
+	/*! \brief Which SVC spatial layer we should forward back */
 	int spatial;
-	/*! \brief Temporal layer associated to this template */
+	/*! \brief As above, but to handle transitions (e.g., wait for keyframe, or get this if available) */
+	int spatial_target;
+	/*! \brief Which SVC temporal layer we should forward back */
 	int temporal;
-} janus_av1_svc_template;
+	/*! \brief As above, but to handle transitions (e.g., wait for keyframe) */
+	int temporal_target;
+	/*! \brief How much time (in us, default 250000) without receiving packets will make us drop to the substream below */
+	guint32 drop_trigger;
+	/*! \brief When we relayed the last packet (used to detect when layers become unavailable) */
+	gint64 last_spatial_layer[3];
+	/*! \brief Whether the spatial layer has changed after processing a packet */
+	gboolean changed_spatial;
+	/*! \brief Whether the temporal layer has changed after processing a packet */
+	gboolean changed_temporal;
+	/*! \brief Whether we need to send the user a keyframe request (PLI) */
+	gboolean need_pli;
+} janus_rtp_svc_context;
 
 /*! \brief Set (or reset) the context fields to their default values
  * @param[in] context The context to (re)set */
-void janus_av1_svc_context_reset(janus_av1_svc_context *context);
+void janus_rtp_svc_context_reset(janus_rtp_svc_context *context);
 
-/*! \brief Process a Dependency Descriptor payload, updating the SVC context accordingly
- * \note At the moment, this code is quite naive, as it mostly looks at the target
- * spatial/temporal layers, and the one written in the Dependency Descriptor data.
- * In the future, this should become more sophisticated, and use additional
- * information like dependency chains and stuff like that
- * @param[in] context The av1svc context to use
- * @param[in] dd Pointer to the Dependency Descriptor data
- * @param[in] dd_len The length of the Dependendy Descriptor data
- * @param[out] template_id Pointer to the ID of the template referenced in this packet
- * @returns TRUE if the packet is valid, FALSE if it should be dropped instead */
-gboolean janus_av1_svc_context_process_dd(janus_av1_svc_context *context,
-	uint8_t *dd, int dd_len, uint8_t *template_id);
+/*! \brief Process an RTP packet, and decide whether this should be relayed or not, updating the context accordingly
+ * \note Calling this method resets the \c changed_spatial , \c changed_temporal and \c need_pli
+ * properties, and updates them according to the decisions made after processing the packet
+ * @param[in] context The VP9 SVC context to use
+ * @param[in] buf The RTP packet to process
+ * @param[in] len The length of the RTP packet (header, extension and payload)
+ * @param[in] dd_content The Dependency Descriptor RTP extension data, if available
+ * @param[in] dd_len Length of the Dependency Descriptor data, if available
+ * @param[in] vcodec Video codec of the RTP payload
+ * @param[in] info Parsed info on VP9-SVC, if any
+ * @param[in] sc RTP switching context to refer to, if any
+ * @returns TRUE if the packet should be relayed, FALSE if it should be dropped instead */
+gboolean janus_rtp_svc_context_process_rtp(janus_rtp_svc_context *context,
+	char *buf, int len, uint8_t *dd_content, int dd_len,
+	janus_videocodec vcodec, janus_vp9_svc_info *info, janus_rtp_switching_context *sc);
 ///@}
-
 
 #endif

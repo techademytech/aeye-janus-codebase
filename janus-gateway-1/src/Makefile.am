@@ -22,7 +22,7 @@ loggersheader_HEADERS = loggers/logger.h
 confdir = $(sysconfdir)/janus
 conf_DATA = $(NULL)
 
-demosdir = $(datadir)/janus/demos
+demosdir = $(datadir)/janus/html
 
 plugindir = $(libdir)/janus/plugins
 plugin_LTLIBRARIES = $(NULL)
@@ -97,6 +97,8 @@ janus_SOURCES = \
 	rtcp.h \
 	rtp.c \
 	rtp.h \
+	rtpfwd.c \
+	rtpfwd.h \
 	rtpsrtp.h \
 	sctp.c \
 	sctp.h \
@@ -203,6 +205,10 @@ transports_cflags = \
 	$(TRANSPORTS_CFLAGS) \
 	$(NULL)
 
+transports_ldflags = \
+	-version-info $(JANUS_VERSION_SO) \
+	$(NULL)
+
 transports_libadd = \
 	$(TRANSPORTS_LIBS) \
 	$(NULL)
@@ -274,6 +280,10 @@ endif
 events_cflags = \
 	$(AM_CFLAGS) \
 	$(EVENTS_CFLAGS) \
+	$(NULL)
+
+events_ldflags = \
+	-version-info $(JANUS_VERSION_SO) \
 	$(NULL)
 
 events_libadd = \
@@ -349,6 +359,10 @@ loggers_cflags = \
 	$(LOGGERS_CFLAGS) \
 	$(NULL)
 
+loggers_ldflags = \
+	-version-info $(JANUS_VERSION_SO) \
+	$(NULL)
+
 loggers_libadd = \
 	$(LOGGERS_LIBS) \
 	$(NULL)
@@ -372,16 +386,23 @@ plugins_cflags = \
 	$(PLUGINS_CFLAGS) \
 	$(NULL)
 
+plugins_ldflags = \
+	-version-info $(JANUS_VERSION_SO) \
+	$(NULL)
+
 plugins_libadd = \
 	$(PLUGINS_LIBS) \
 	$(NULL)
 
 if ENABLE_PLUGIN_AUDIOBRIDGE
 plugin_LTLIBRARIES += plugins/libjanus_audiobridge.la
-plugins_libjanus_audiobridge_la_SOURCES = plugins/janus_audiobridge.c
-plugins_libjanus_audiobridge_la_CFLAGS = $(plugins_cflags) $(OPUS_CFLAGS) $(OGG_CFLAGS) $(LIBSRTP_CFLAGS)
-plugins_libjanus_audiobridge_la_LDFLAGS = $(plugins_ldflags) $(OPUS_LDFLAGS) $(OPUS_LIBS) $(OGG_LDFLAGS) $(OGG_LIBS)
-plugins_libjanus_audiobridge_la_LIBADD = $(plugins_libadd) $(OPUS_LIBADD) $(OGG_LIBADD)
+plugins_libjanus_audiobridge_la_SOURCES = plugins/janus_audiobridge.c \
+	plugins/audiobridge-deps/jitter.c plugins/audiobridge-deps/resample.c plugins/audiobridge-deps/arch.h \
+	plugins/audiobridge-deps/os_support.h plugins/audiobridge-deps/speex/speex_jitter.h plugins/audiobridge-deps/speex/speex_resampler.h \
+	plugins/audiobridge-deps/speex/speexdsp_types.h plugins/audiobridge-deps/speex/speexdsp_config_types.h
+plugins_libjanus_audiobridge_la_CFLAGS = $(plugins_cflags) $(OPUS_CFLAGS) $(OGG_CFLAGS) $(RNNOISE_CFLAGS) $(LIBSRTP_CFLAGS)
+plugins_libjanus_audiobridge_la_LDFLAGS = $(plugins_ldflags) $(OPUS_LDFLAGS) $(OPUS_LIBS) $(OGG_LDFLAGS) $(OGG_LIBS) $(RNNOISE_LDFLAGS) $(RNNOISE_LIBS)
+plugins_libjanus_audiobridge_la_LIBADD = $(plugins_libadd) $(OPUS_LIBADD) $(OGG_LIBADD) $(RNNOISE_LIBADD)
 conf_DATA += ../conf/janus.plugin.audiobridge.jcfg.sample
 EXTRA_DIST += ../conf/janus.plugin.audiobridge.jcfg.sample
 endif
@@ -473,17 +494,6 @@ conf_DATA += ../conf/janus.plugin.videoroom.jcfg.sample
 EXTRA_DIST += ../conf/janus.plugin.videoroom.jcfg.sample
 endif
 
-if ENABLE_PLUGIN_VOICEMAIL
-plugin_LTLIBRARIES += plugins/libjanus_voicemail.la
-plugins_libjanus_voicemail_la_SOURCES = plugins/janus_voicemail.c
-plugins_libjanus_voicemail_la_CFLAGS = $(plugins_cflags)
-plugins_libjanus_voicemail_la_LDFLAGS = $(plugins_ldflags) -logg
-plugins_libjanus_voicemail_la_LIBADD = $(plugins_libadd)
-conf_DATA += ../conf/janus.plugin.voicemail.jcfg.sample
-EXTRA_DIST += ../conf/janus.plugin.voicemail.jcfg.sample.in
-CLEANFILES += ../conf/janus.plugin.voicemail.jcfg.sample
-endif
-
 if ENABLE_PLUGIN_TEXTROOM
 plugin_LTLIBRARIES += plugins/libjanus_textroom.la
 plugins_libjanus_textroom_la_SOURCES = plugins/janus_textroom.c
@@ -542,6 +552,8 @@ janus_pp_rec_SOURCES = \
 	postprocessing/pp-g711.h \
 	postprocessing/pp-g722.c \
 	postprocessing/pp-g722.h \
+	postprocessing/pp-l16.c \
+	postprocessing/pp-l16.h \
 	postprocessing/pp-h264.c \
 	postprocessing/pp-h264.h \
 	postprocessing/pp-av1.c \

@@ -129,11 +129,9 @@ Usage: janus-pp-rec [OPTIONS] source.mjr
 #include "pp-opus.h"
 #include "pp-g711.h"
 #include "pp-g722.h"
+#include "pp-l16.h"
 #include "pp-srt.h"
 #include "pp-binary.h"
-
-#define htonll(x) ((1==htonl(1)) ? (x) : ((gint64)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
-#define ntohll(x) ((1==ntohl(1)) ? (x) : ((gint64)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
 
 int janus_log_level = 4;
 gboolean janus_log_timestamps = FALSE;
@@ -198,7 +196,7 @@ static char *janus_pp_extensions_string(const char **allowed, char *supported, s
 	janus_strlcat(supported, "[", suplen);
 	const char **ext = allowed;
 	while(*ext != NULL) {
-		if(strlen(supported) > 1)
+		if(strnlen(supported, 1 + 1) > 1)
 			janus_strlcat(supported, ", ", suplen);
 		janus_strlcat(supported, *ext, suplen);
 		ext++;
@@ -209,7 +207,7 @@ static char *janus_pp_extensions_string(const char **allowed, char *supported, s
 
 /* Main Code */
 int main(int argc, char *argv[]) {
-	janus_log_init(FALSE, TRUE, NULL);
+	janus_log_init(FALSE, TRUE, NULL, NULL);
 	atexit(janus_log_destroy);
 
 	/* Initialize some command line options defaults */
@@ -237,6 +235,7 @@ int main(int argc, char *argv[]) {
 		JANUS_LOG(LOG_INFO, "  -- Opus:   %s\n", janus_pp_extensions_string(janus_pp_opus_get_extensions(), supported, sizeof(supported)));
 		JANUS_LOG(LOG_INFO, "  -- G.711:  %s\n", janus_pp_extensions_string(janus_pp_g711_get_extensions(), supported, sizeof(supported)));
 		JANUS_LOG(LOG_INFO, "  -- G.722:  %s\n", janus_pp_extensions_string(janus_pp_g722_get_extensions(), supported, sizeof(supported)));
+		JANUS_LOG(LOG_INFO, "  -- L16:    %s\n", janus_pp_extensions_string(janus_pp_l16_get_extensions(), supported, sizeof(supported)));
 		JANUS_LOG(LOG_INFO, "  -- VP8:    %s\n", janus_pp_extensions_string(janus_pp_webm_get_extensions(), supported, sizeof(supported)));
 		JANUS_LOG(LOG_INFO, "  -- VP9:    %s\n", janus_pp_extensions_string(janus_pp_webm_get_extensions(), supported, sizeof(supported)));
 		JANUS_LOG(LOG_INFO, "  -- H.264:  %s\n", janus_pp_extensions_string(janus_pp_h264_get_extensions(), supported, sizeof(supported)));
@@ -374,7 +373,7 @@ int main(int argc, char *argv[]) {
 	gboolean has_timestamps = FALSE;
 	gboolean parsed_header = FALSE;
 	gboolean video = FALSE, data = FALSE, textdata = FALSE;
-	gboolean opus = FALSE, multiopus = FALSE, g711 = FALSE, g722 = FALSE,
+	gboolean opus = FALSE, multiopus = FALSE, g711 = FALSE, g722 = FALSE, l16 = FALSE, l16_48k = FALSE,
 		vp8 = FALSE, vp9 = FALSE, h264 = FALSE, av1 = FALSE, h265 = FALSE;
 	int opusred_pt = 0;
 	gboolean e2ee = FALSE;
@@ -618,6 +617,16 @@ int main(int argc, char *argv[]) {
 							janus_pprec_options_destroy();
 							exit(1);
 						}
+					} else if(!strcasecmp(c, "l16") || !strcasecmp(c, "l16-48")) {
+						l16 = TRUE;
+						l16_48k = !strcasecmp(c, "l16-48");
+						if(extension && !janus_pp_extension_check(extension, janus_pp_l16_get_extensions())) {
+							JANUS_LOG(LOG_ERR, "L16 RTP packets cannot be converted to this target file, at the moment (supported formats: %s)\n",
+								janus_pp_extensions_string(janus_pp_l16_get_extensions(), supported, sizeof(supported)));
+							json_decref(info);
+							janus_pprec_options_destroy();
+							exit(1);
+						}
 					} else {
 						JANUS_LOG(LOG_WARN, "The post-processor only supports Opus, G.711 and G.722 audio for now (was '%s')...\n", c);
 						json_decref(info);
@@ -824,7 +833,7 @@ int main(int argc, char *argv[]) {
 				JANUS_LOG(LOG_WARN, "Missing data timestamp header");
 				break;
 			}
-			when = ntohll(when);
+			when = ntohll((uint64_t)when);
 			offset += sizeof(gint64);
 			len -= sizeof(gint64);
 			/* Generate frame packet and insert in the ordered list */
@@ -1079,7 +1088,7 @@ int main(int argc, char *argv[]) {
 						p->prev = tmp;
 						break;
 					} else if(tmp->seq > p->seq && (abs(tmp->seq - p->seq) > 10000)) {
-						/* The new sequence number (resetted) is greater than the last one we have, append */
+						/* The new sequence number (reset) is greater than the last one we have, append */
 						added = 1;
 						if(tmp->next != NULL) {
 							/* We're inserting */
@@ -1099,12 +1108,13 @@ int main(int argc, char *argv[]) {
 						break;
 					}
 				}
-				/* If either the timestamp ot the sequence number we just got is smaller, keep going back */
+				/* If either the timestamp or the sequence number we just got is smaller, keep going back */
 				tmp = tmp->prev;
 			}
 			if(p->drop) {
 				/* We don't need this */
 				g_free(p);
+				p = NULL;
 			} else if(!added) {
 				/* We reached the start */
 				p->next = list;
@@ -1113,7 +1123,7 @@ int main(int argc, char *argv[]) {
 			}
 		}
 		/* Add to the extended header, if that's what we're doing */
-		if(extjson_only && p->rotation != -1 && p->rotation != last_rotation) {
+		if(extjson_only && p && p->rotation != -1 && p->rotation != last_rotation) {
 			last_rotation = p->rotation;
 			if(rotations == NULL)
 				rotations = json_array();
@@ -1142,6 +1152,8 @@ int main(int argc, char *argv[]) {
 	int rate = video ? 90000 : 48000;
 	if(g711 || g722)
 		rate = 8000;
+	else if(l16 && !l16_48k)
+		rate = 16000;
 	double ts = 0.0, pts = 0.0;
 	while(tmp) {
 		count++;
@@ -1157,6 +1169,12 @@ int main(int argc, char *argv[]) {
 		tmp = tmp->next;
 	}
 	JANUS_LOG(LOG_INFO, "Counted %"SCNu32" frame packets\n", count);
+	if(!data && !video) {
+		double diff = ts - pts;
+		if(diff < -0.5 || diff > 0.5) {
+			JANUS_LOG(LOG_WARN, "Detected audio clock mismatch, consider using skew compensation or restamping (rtp_time=%.2fs, real_time=%.2fs, diff=%.2fs)\n", ts, pts, diff);
+		}
+	}
 	if(rotated != -1) {
 		if(rotated == 0 && last_rotation != 0) {
 			JANUS_LOG(LOG_INFO, "The video is rotated\n");
@@ -1256,7 +1274,11 @@ int main(int argc, char *argv[]) {
 	}
 
 	/* Run restamping */
-	if(!video && !data && options.restamp_multiplier > 0) {
+	gboolean restamping = FALSE;
+	if(options.restamp_multiplier > 0) {
+		restamping = TRUE;
+	}
+	if(!video && !data && restamping) {
 		tmp = list;
 		uint64_t restamping_offset = 0;
 		double restamp_threshold = (double) options.restamp_min_th/1000;
@@ -1352,6 +1374,14 @@ int main(int argc, char *argv[]) {
 				janus_pprec_options_destroy();
 				exit(1);
 			}
+		} else if(l16) {
+			if(janus_pp_l16_create(destination, l16_48k ? 48000 : 16000, metadata) < 0) {
+				JANUS_LOG(LOG_ERR, "Error creating .wav file...\n");
+				g_free(metadata);
+				g_free(extension);
+				janus_pprec_options_destroy();
+				exit(1);
+			}
 		}
 	} else if(data) {
 		if(textdata) {
@@ -1410,7 +1440,7 @@ int main(int argc, char *argv[]) {
 	/* Loop */
 	if(!video && !data) {
 		if(opus) {
-			if(janus_pp_opus_process(file, list, &working) < 0) {
+			if(janus_pp_opus_process(file, list, restamping, &working) < 0) {
 				JANUS_LOG(LOG_ERR, "Error processing Opus RTP frames...\n");
 			}
 		} else if(g711) {
@@ -1420,6 +1450,10 @@ int main(int argc, char *argv[]) {
 		} else if(g722) {
 			if(janus_pp_g722_process(file, list, &working) < 0) {
 				JANUS_LOG(LOG_ERR, "Error processing G.722 RTP frames...\n");
+			}
+		} else if(l16) {
+			if(janus_pp_l16_process(file, list, &working) < 0) {
+				JANUS_LOG(LOG_ERR, "Error processing L16 RTP frames...\n");
 			}
 		}
 	} else if(data) {
@@ -1476,6 +1510,8 @@ int main(int argc, char *argv[]) {
 			janus_pp_g711_close();
 		} else if(g722) {
 			janus_pp_g722_close();
+		} else if(l16) {
+			janus_pp_l16_close();
 		}
 	}
 	fclose(file);
@@ -1616,8 +1652,8 @@ static gint janus_pp_skew_compensate_audio(janus_pp_frame_packet *pkt, janus_pp_
 		exit_status = -1;
 	} else {
 		context->target_ts = 0;
-		/* Do not execute analysis for out of order packets or multi-packets frame */
-		if (context->last_seq == context->prev_seq + 1 && context->last_ts != context->prev_ts) {
+		/* Do not execute analysis for out of order packets or multi-packets frame or if pts < start_time */
+		if (context->last_seq == context->prev_seq + 1 && context->last_ts != context->prev_ts && pts >= context->start_time) {
 			/* Evaluate the local RTP timestamp according to the local clock */
 			guint64 expected_ts = ((pts - context->start_time) * akhz) + context->start_ts;
 			/* Evaluate current delay */

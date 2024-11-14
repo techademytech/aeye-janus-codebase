@@ -29,9 +29,6 @@
 #include "debug.h"
 #include "utils.h"
 
-#define htonll(x) ((1==htonl(1)) ? (x) : ((gint64)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
-#define ntohll(x) ((1==ntohl(1)) ? (x) : ((gint64)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
-
 
 /* Info header in the structured recording */
 static const char *header = "MJR00002";
@@ -79,6 +76,7 @@ static void janus_recorder_free(const janus_refcount *recorder_ref) {
 	recorder->fmtp = NULL;
 	if(recorder->extensions != NULL)
 		g_hash_table_destroy(recorder->extensions);
+	janus_mutex_destroy(&recorder->mutex);
 	g_free(recorder);
 }
 
@@ -97,7 +95,7 @@ janus_recorder *janus_recorder_create_full(const char *dir, const char *codec, c
 		type = JANUS_RECORDER_VIDEO;
 	} else if(!strcasecmp(codec, "opus") || !strcasecmp(codec, "multiopus")
 			|| !strcasecmp(codec, "g711") || !strcasecmp(codec, "pcmu") || !strcasecmp(codec, "pcma")
-			|| !strcasecmp(codec, "g722")) {
+			|| !strcasecmp(codec, "g722") || !strcasecmp(codec, "l16-48") || !strcasecmp(codec, "l16")) {
 		type = JANUS_RECORDER_AUDIO;
 	} else if(!strcasecmp(codec, "text") || !strcasecmp(codec, "binary")) {
 		/* Data channels may be text or binary, so that's what we can save too */
@@ -118,6 +116,7 @@ janus_recorder *janus_recorder_create_full(const char *dir, const char *codec, c
 	rc->fmtp = fmtp ? g_strdup(fmtp) : NULL;
 	rc->description = NULL;
 	rc->created = janus_get_real_time();
+	janus_mutex_init(&rc->mutex);
 	const char *rec_dir = NULL;
 	const char *rec_file = NULL;
 	char *copy_for_parent = NULL;
@@ -249,7 +248,6 @@ janus_recorder *janus_recorder_create_full(const char *dir, const char *codec, c
 	g_atomic_int_set(&rc->writable, 1);
 	/* We still need to also write the info header first */
 	g_atomic_int_set(&rc->header, 0);
-	janus_mutex_init(&rc->mutex);
 	/* Done */
 	g_atomic_int_set(&rc->destroyed, 0);
 	g_free(copy_for_parent);
@@ -438,7 +436,7 @@ int janus_recorder_save_frame(janus_recorder *recorder, char *buffer, uint lengt
 	}
 	if(recorder->type == JANUS_RECORDER_DATA) {
 		/* If it's data, then we need to prepend timing related info, as it's not there by itself */
-		gint64 now = htonll(janus_get_real_time());
+		gint64 now = htonll((uint64_t)janus_get_real_time());
 		res = fwrite(&now, sizeof(gint64), 1, recorder->file);
 		if(res != 1) {
 			JANUS_LOG(LOG_WARN, "Couldn't write data timestamp in .mjr file (%zu != %zu, %s), expect issues post-processing\n",

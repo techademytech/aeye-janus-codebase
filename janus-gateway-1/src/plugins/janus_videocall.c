@@ -10,7 +10,8 @@
  * \page videocall VideoCall plugin documentation
  * This is a simple video call plugin for Janus, allowing two
  * WebRTC peers to call each other through the Janus core. The idea is to
- * provide a similar service as the well known AppRTC demo (https://apprtc.appspot.com),
+ * provide a similar service as the at the time well known (and now
+ * discontinued) AppRTC demo (https://github.com/webrtc/apprtc),
  * but with the media flowing through a server rather than being peer-to-peer.
  *
  * The plugin provides a simple fake registration mechanism. A peer attaching
@@ -92,7 +93,7 @@
 }
 \endverbatim
  *
- * If successul, this will result in a \c registered event:
+ * If successful, this will result in a \c registered event:
  *
 \verbatim
 {
@@ -117,7 +118,7 @@
 }
 \endverbatim
  *
- * If successul, this will result in a \c calling event:
+ * If successful, this will result in a \c calling event:
  *
 \verbatim
 {
@@ -153,7 +154,7 @@
 }
 \endverbatim
  *
- * If successul, both the caller and the callee will receive an
+ * If successful, both the caller and the callee will receive an
  * \c accepted event to notify them about the success of the signalling:
  *
 \verbatim
@@ -778,7 +779,8 @@ void janus_videocall_incoming_rtp(janus_plugin_session *handle, janus_plugin_rtp
 			/* Process this packet: don't relay if it's not the SSRC/layer we wanted to handle
 			 * The caveat is that the targets in OUR simulcast context are the PEER's targets */
 			gboolean relay = janus_rtp_simulcasting_context_process_rtp(&peer->sim_context,
-				buf, len, session->ssrc, session->rid, session->vcodec, &peer->context, &session->rid_mutex);
+				buf, len, packet->extensions.dd_content, packet->extensions.dd_len,
+				session->ssrc, session->rid, session->vcodec, &peer->context, &session->rid_mutex);
 			/* Do we need to drop this? */
 			if(!relay)
 				return;
@@ -1136,12 +1138,6 @@ static void *janus_videocall_handler(void *data) {
 			janus_mutex_unlock(&sessions_mutex);
 		} else if(!strcasecmp(request_text, "register")) {
 			/* Map this handle to a username */
-			if(session->username != NULL) {
-				JANUS_LOG(LOG_ERR, "Already registered (%s)\n", session->username);
-				error_code = JANUS_VIDEOCALL_ERROR_ALREADY_REGISTERED;
-				g_snprintf(error_cause, 512, "Already registered (%s)", session->username);
-				goto error;
-			}
 			JANUS_VALIDATE_JSON_OBJECT(root, username_parameters,
 				error_code, error_cause, TRUE,
 				JANUS_VIDEOCALL_ERROR_MISSING_ELEMENT, JANUS_VIDEOCALL_ERROR_INVALID_ELEMENT);
@@ -1150,6 +1146,13 @@ static void *janus_videocall_handler(void *data) {
 			json_t *username = json_object_get(root, "username");
 			const char *username_text = json_string_value(username);
 			janus_mutex_lock(&sessions_mutex);
+			if(session->username != NULL) {
+				janus_mutex_unlock(&sessions_mutex);
+				JANUS_LOG(LOG_ERR, "Already registered (%s)\n", session->username);
+				error_code = JANUS_VIDEOCALL_ERROR_ALREADY_REGISTERED;
+				g_snprintf(error_cause, 512, "Already registered (%s)", session->username);
+				goto error;
+			}
 			if(g_hash_table_lookup(usernames, username_text) != NULL) {
 				janus_mutex_unlock(&sessions_mutex);
 				JANUS_LOG(LOG_ERR, "Username '%s' already taken\n", username_text);
@@ -1374,7 +1377,7 @@ static void *janus_videocall_handler(void *data) {
 			session->has_data = (strstr(msg_sdp, "DTLS/SCTP") != NULL);
 			/* Check if this user will simulcast */
 			json_t *msg_simulcast = json_object_get(msg->jsep, "simulcast");
-			if(msg_simulcast && janus_get_codec_pt(msg_sdp, "vp8") > 0) {
+			if(msg_simulcast) {
 				JANUS_LOG(LOG_VERB, "VideoCall callee (%s) cannot do simulcast.\n", session->username);
 			} else {
 				janus_rtp_simulcasting_cleanup(NULL, session->ssrc, session->rid, &session->rid_mutex);
@@ -1386,8 +1389,14 @@ static void *janus_videocall_handler(void *data) {
 			janus_sdp_find_first_codec(answer, JANUS_SDP_VIDEO, -1, &vcodec);
 			session->vcodec = janus_videocodec_from_name(vcodec);
 			session->opusred_pt = janus_sdp_get_opusred_pt(answer, -1);
-			if(peer)
+			if(peer) {
+				peer->has_audio = session->has_audio;
+				peer->has_video = session->has_video;
+				peer->has_data = session->has_data;
+				peer->acodec = session->acodec;
+				peer->vcodec = session->vcodec;
 				peer->opusred_pt = session->opusred_pt;
+			}
 			if(session->acodec == JANUS_AUDIOCODEC_NONE) {
 				session->has_audio = FALSE;
 				if(peer)
@@ -1491,6 +1500,8 @@ static void *janus_videocall_handler(void *data) {
 				gateway->send_remb(session->handle, session->bitrate ? session->bitrate : 10000000);
 			}
 			janus_videocall_session *peer = session->peer;
+			if(peer)
+				janus_refcount_increase(&peer->ref);
 			if(fallback) {
 				JANUS_LOG(LOG_VERB, "Setting fallback timer (simulcast): %lld (was %"SCNu32")\n",
 					json_integer_value(fallback) ? json_integer_value(fallback) : 250000,
@@ -1525,7 +1536,7 @@ static void *janus_videocall_handler(void *data) {
 				session->sim_context.templayer_target = json_integer_value(temporal);
 				JANUS_LOG(LOG_VERB, "Setting video temporal layer to let through (simulcast): %d (was %d)\n",
 					session->sim_context.templayer_target, session->sim_context.templayer);
-				if(session->vcodec == JANUS_VIDEOCODEC_VP8 && session->sim_context.templayer_target == session->sim_context.templayer) {
+				if(session->sim_context.templayer_target == session->sim_context.templayer) {
 					/* No need to do anything, we're already getting the right temporal, so notify the user */
 					json_t *event = json_object();
 					json_object_set_new(event, "videocall", json_string("event"));
@@ -1543,12 +1554,62 @@ static void *janus_videocall_handler(void *data) {
 						gateway->send_pli(peer->handle);
 				}
 			}
-			if(record) {
-				if(msg_sdp) {
-					session->has_audio = (strstr(msg_sdp, "m=audio") != NULL);
-					session->has_video = (strstr(msg_sdp, "m=video") != NULL);
-					session->has_data = (strstr(msg_sdp, "DTLS/SCTP") != NULL);
+			if(msg_sdp && msg_sdp_type && !strcasecmp(msg_sdp_type, "answer")) {
+				/* Process the answer to see if there were any changes */
+				char error_str[512];
+				janus_sdp *answer = janus_sdp_parse(msg_sdp, error_str, sizeof(error_str));
+				if(answer == NULL) {
+					if(peer)
+						janus_refcount_decrease(&peer->ref);
+					JANUS_LOG(LOG_ERR, "Error parsing answer: %s\n", error_str);
+					error_code = JANUS_VIDEOCALL_ERROR_INVALID_SDP;
+					g_snprintf(error_cause, 512, "Error parsing answer: %s", error_str);
+					goto error;
 				}
+				JANUS_LOG(LOG_VERB, "%s is accepting an update from %s\n", session->username, peer ? peer->username : "??");
+				session->has_audio = (strstr(msg_sdp, "m=audio") != NULL);
+				session->has_video = (strstr(msg_sdp, "m=video") != NULL);
+				session->has_data = (strstr(msg_sdp, "DTLS/SCTP") != NULL);
+				/* Check if this user will simulcast */
+				json_t *msg_simulcast = json_object_get(msg->jsep, "simulcast");
+				if(msg_simulcast) {
+					JANUS_LOG(LOG_VERB, "VideoCall callee (%s) cannot do simulcast.\n", session->username);
+				} else {
+					janus_rtp_simulcasting_cleanup(NULL, session->ssrc, session->rid, &session->rid_mutex);
+				}
+				/* Check which codecs we ended up using */
+				const char *acodec = NULL, *vcodec = NULL;
+				janus_sdp_find_first_codec(answer, JANUS_SDP_AUDIO, -1, &acodec);
+				session->acodec = janus_audiocodec_from_name(acodec);
+				janus_sdp_find_first_codec(answer, JANUS_SDP_VIDEO, -1, &vcodec);
+				session->vcodec = janus_videocodec_from_name(vcodec);
+				session->opusred_pt = janus_sdp_get_opusred_pt(answer, -1);
+				janus_videocall_session *peer = session->peer;
+				if(peer) {
+					peer->has_audio = session->has_audio;
+					peer->has_video = session->has_video;
+					peer->has_data = session->has_data;
+					peer->acodec = session->acodec;
+					peer->vcodec = session->vcodec;
+					peer->opusred_pt = session->opusred_pt;
+				}
+				if(session->acodec == JANUS_AUDIOCODEC_NONE) {
+					session->has_audio = FALSE;
+					if(peer)
+						peer->has_audio = FALSE;
+				} else if(peer) {
+					peer->acodec = session->acodec;
+				}
+				if(session->vcodec == JANUS_VIDEOCODEC_NONE) {
+					session->has_video = FALSE;
+					if(peer)
+						peer->has_video = FALSE;
+				} else if(peer) {
+					peer->vcodec = session->vcodec;
+				}
+				janus_sdp_destroy(answer);
+			}
+			if(record) {
 				gboolean recording = json_is_true(record);
 				const char *recording_base = json_string_value(recfile);
 				JANUS_LOG(LOG_VERB, "Recording %s (base filename: %s)\n", recording ? "enabled" : "disabled", recording_base ? recording_base : "not provided");
@@ -1694,6 +1755,8 @@ static void *janus_videocall_handler(void *data) {
 				json_decref(event);
 				json_decref(jsep);
 			}
+			if(peer)
+				janus_refcount_decrease(&peer->ref);
 		} else if(!strcasecmp(request_text, "hangup")) {
 			json_t *hangup = json_object_get(root, "reason");
 			if(hangup && !json_is_string(hangup)) {

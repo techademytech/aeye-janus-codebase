@@ -67,7 +67,11 @@ int janus_pp_h264_create(char *destination, char *metadata, gboolean faststart, 
     char filename[1024];
 	snprintf(filename, sizeof(filename), "%s", destination);
 #ifdef USE_CODECPAR
+#if LIBAVCODEC_VER_AT_LEAST(59, 18)
 	const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+#else
+	AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+#endif
 	if(!codec) {
 		/* Error opening video codec */
 		JANUS_LOG(LOG_ERR, "Encoder not available\n");
@@ -122,7 +126,9 @@ int janus_pp_h264_create(char *destination, char *metadata, gboolean faststart, 
 		JANUS_LOG(LOG_ERR, "Error opening file for output (%d, %s)\n", res, av_err2str(res));
 		return -1;
 	}
+#if LIBAVFORMAT_VER_AT_LEAST(58, 7)
 	fctx->url = g_strdup(filename);
+#endif
 	if(avformat_write_header(fctx, &options) < 0) {
 		JANUS_LOG(LOG_ERR, "Error writing header\n");
 		return -1;
@@ -140,9 +146,11 @@ static uint32_t janus_pp_h264_eg_decode(uint8_t *base, uint32_t *offset) {
 	while(janus_pp_h264_eg_getbit(base, (*offset)++) == 0)
 		zeros++;
 	uint32_t res = 1 << zeros;
-	int32_t i = 0;
-	for(i=zeros-1; i>=0; i--) {
-		res |= janus_pp_h264_eg_getbit(base, (*offset)++) << i;
+	if(zeros > 0) {
+		int32_t i = 0;
+		for(i=zeros-1; i>=0; i--) {
+			res |= janus_pp_h264_eg_getbit(base, (*offset)++) << i;
+		}
 	}
 	return res-1;
 }
@@ -537,7 +545,7 @@ int janus_pp_h264_process(FILE *file, janus_pp_frame_packet *list, int *working)
 
 /* Close MP4 file */
 void janus_pp_h264_close(void) {
-	if(fctx != NULL)
+	if(fctx != NULL) {
 		av_write_trailer(fctx);
 #ifdef USE_CODECPAR
 	if(vEncoder != NULL)
@@ -546,15 +554,7 @@ void janus_pp_h264_close(void) {
 	if(vStream != NULL && vStream->codec != NULL)
 		avcodec_close(vStream->codec);
 #endif
-	if(fctx != NULL && fctx->streams[0] != NULL) {
-#ifndef USE_CODECPAR
-		av_free(fctx->streams[0]->codec);
-#endif
-		av_free(fctx->streams[0]);
-	}
-	if(fctx != NULL) {
 		avio_close(fctx->pb);
-		g_free(fctx->url);
-		av_free(fctx);
+		avformat_free_context(fctx);
 	}
 }

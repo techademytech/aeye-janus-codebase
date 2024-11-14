@@ -32,8 +32,25 @@ struct janus_json_parameter {
 	unsigned int flags;
 };
 
+#ifndef htonll
+#define htonll(x) ((1==htonl(1)) ? (x) : ((guint64)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
+#endif
+#ifndef ntohll
+#define ntohll(x) ((1==ntohl(1)) ? (x) : ((guint64)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
+#endif
+
+
+/*! Helper method used by the core to mark when Janus started */
+void janus_mark_started(void);
+
 /*! \brief Helper to retrieve the system monotonic time, as Glib's
  * g_get_monotonic_time may not be available (only since 2.28)
+ * @returns The system monotonic time */
+gint64 janus_get_monotonic_time_internal(void);
+
+/*! \brief Helper to retrieve the system monotonic time, as Glib's
+ * g_get_monotonic_time may not be available (only since 2.28)
+ * @note The monotonic time will be normalized from the Janus start time
  * @returns The system monotonic time */
 gint64 janus_get_monotonic_time(void);
 
@@ -50,14 +67,14 @@ gint64 janus_get_real_time(void);
  * @returns A pointer to the updated text string (re-allocated or just updated) */
 char *janus_string_replace(char *message, const char *old_string, const char *new_string) G_GNUC_WARN_UNUSED_RESULT;
 
-/*! \brief Helper method to concatenate strings and log an error if truncation occured
+/*! \brief Helper method to concatenate strings and log an error if truncation occurred
  * @param[in] dest Destination buffer, already containing one nul-terminated string
  * @param[in] src Source buffer
  * @param[in] dest_size Length of dest buffer in bytes (not length of existing string inside dest)
  * @returns Size of attempted result, if retval >= dest_size, truncation occurred (and an error will be logged). */
 size_t janus_strlcat(char *dest, const char *src, size_t dest_size);
 
-/*! \brief Alternative helper method to concatenate strings and log an error if truncation occured,
+/*! \brief Alternative helper method to concatenate strings and log an error if truncation occurred,
  * which uses memccpy instead of g_strlcat and so is supposed to be faster
  * @note The offset attribute is input/output, and updated any time the method is called
  * @param[in] dest Destination buffer, already containing one nul-terminated string
@@ -226,8 +243,7 @@ void janus_protected_folders_clear(void);
 /*! \brief Creates a string describing the JSON type and constraint
  * @param jtype The JSON type, e.g., JSON_STRING
  * @param flags Indicates constraints for the described type
- * @param[out] type_name The type description, e.g., "a positive integer"; required size is 19 characters
- * @returns 0 if successful, a negative integer otherwise */
+ * @param[out] type_name The type description, e.g., "a positive integer"; required size is 19 characters */
 void janus_get_json_type_name(int jtype, unsigned int flags, char *type_name);
 
 /*! \brief Checks whether the JSON value matches the type and constraint
@@ -326,20 +342,34 @@ gboolean janus_vp8_is_keyframe(const char *buffer, int len);
 gboolean janus_vp9_is_keyframe(const char *buffer, int len);
 
 /*! \brief Helper method to check if an H.264 frame is a keyframe or not
+ * @note This checks the presence of an SPS NAL (7), nor an I-Frame (5),
+ * since SPS/PPS are what's needed for a browser to actually be able to
+ * decode a stream. If for some reason you want to check for I-Frames
+ * instead, use the janus_h264_is_i_frame() function
  * @param[in] buffer The RTP payload to process
  * @param[in] len The length of the RTP payload
  * @returns TRUE if it's a keyframe, FALSE otherwise */
 gboolean janus_h264_is_keyframe(const char *buffer, int len);
 
+/*! \brief Helper method to check if an H.264 frame contains an I-Frame or not
+ * @param[in] buffer The RTP payload to process
+ * @param[in] len The length of the RTP payload
+ * @returns TRUE if it's an I-Frame, FALSE otherwise */
+gboolean janus_h264_is_i_frame(const char *buffer, int len);
+
+/*! \brief Helper method to check if an H.264 frame contains a B-Frame or not
+ * @param[in] buffer The RTP payload to process
+ * @param[in] len The length of the RTP payload
+ * @returns TRUE if it's a B-Frame, FALSE otherwise */
+gboolean janus_h264_is_b_frame(const char *buffer, int len);
+
 /*! \brief Helper method to check if an AV1 frame is a keyframe or not
- * @note Currently only a placeholder, always returns FALSE
  * @param[in] buffer The RTP payload to process
  * @param[in] len The length of the RTP payload
  * @returns TRUE if it's a keyframe, FALSE otherwise */
 gboolean janus_av1_is_keyframe(const char *buffer, int len);
 
 /*! \brief Helper method to check if an H.265 frame is a keyframe or not
- * @note Currently only a placeholder, always returns FALSE
  * @param[in] buffer The RTP payload to process
  * @param[in] len The length of the RTP payload
  * @returns TRUE if it's a keyframe, FALSE otherwise */
@@ -358,6 +388,7 @@ void janus_vp8_simulcast_context_reset(janus_vp8_simulcast_context *context);
 /*! \brief Helper method to parse a VP8 payload descriptor for useful info (e.g., when simulcasting)
  * @param[in] buffer The RTP payload to process
  * @param[in] len The length of the RTP payload
+ * @param[out] m Whether the Picture ID is 15 bit or 7 bit
  * @param[out] picid The Picture ID
  * @param[out] tl0picidx Temporal level zero index
  * @param[out] tid Temporal-layer index
@@ -365,7 +396,7 @@ void janus_vp8_simulcast_context_reset(janus_vp8_simulcast_context *context);
  * @param[out] keyidx Temporal key frame index
  * @returns 0 in case of success, a negative integer otherwise */
 int janus_vp8_parse_descriptor(char *buffer, int len,
-		uint16_t *picid, uint8_t *tl0picidx, uint8_t *tid, uint8_t *y, uint8_t *keyidx);
+		gboolean *m, uint16_t *picid, uint8_t *tl0picidx, uint8_t *tid, uint8_t *y, uint8_t *keyidx);
 
 /*! \brief Use the context info to update the RTP header of a packet, if needed
  * @param[in] buffer The RTP payload to process
@@ -449,12 +480,12 @@ void janus_set3(guint8 *data, size_t i, guint32 val);
  */
 void janus_set4(guint8 *data, size_t i, guint32 val);
 
-/* \brief Helpers to read a bit from a bitstream
+/*! \brief Helpers to read a bit from a bitstream
  * @param[in] base Pointer to the start of the bitstream
  * @param[in] offset Offset in bits from the start
  * @returns The value of the bit */
 uint8_t janus_bitstream_getbit(uint8_t *base, uint32_t offset);
-/* \brief Helpers to read agroup of bits from a bitstream
+/*! \brief Helpers to read agroup of bits from a bitstream
  * @param[in] base Pointer to the start of the bitstream
  * @param[in] num The number of bits to read
  * @param[in] offset Offset in bits from the start

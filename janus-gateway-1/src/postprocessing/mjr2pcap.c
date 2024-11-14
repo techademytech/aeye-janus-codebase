@@ -150,7 +150,7 @@ static void janus_pp_handle_signal(int signum) {
 
 /* Main Code */
 int main(int argc, char *argv[]) {
-	janus_log_init(FALSE, TRUE, NULL);
+	janus_log_init(FALSE, TRUE, NULL, NULL);
 	atexit(janus_log_destroy);
 
 	JANUS_LOG(LOG_INFO, "Janus version: %d (%s)\n", janus_version, janus_version_string);
@@ -348,7 +348,7 @@ int main(int argc, char *argv[]) {
 		struct timeval tv;
 		if(has_timestamps) {
 			/* Prepare a valid timestamp */
-			gint64 timestamp = started + (pkt_ts*1000);
+			gint64 timestamp = started + ((gint64)pkt_ts*1000);
 			tv.tv_sec = timestamp / G_USEC_PER_SEC;
 			tv.tv_usec = timestamp -  (tv.tv_sec*G_USEC_PER_SEC);
 		} else {

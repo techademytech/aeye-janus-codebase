@@ -76,7 +76,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 	janus_rtp_header_extension_parse_audio_level((char *)data, size, 1, NULL, NULL);
 	janus_rtp_header_extension_parse_playout_delay((char *)data, size, 1, NULL, NULL);
 	janus_rtp_header_extension_parse_transport_wide_cc((char *)data, size, 1, &transport_seq_num);
-	janus_rtp_header_extension_parse_abs_sent_time((char *)data, size, 1, NULL);
+	janus_rtp_header_extension_parse_abs_send_time((char *)data, size, 1, NULL);
+	janus_rtp_header_extension_parse_abs_capture_time((char *)data, size, 1, NULL);
 	janus_rtp_header_extension_parse_video_orientation((char * )data, size, 1, &c, &f, &r1, &r0);
 	janus_rtp_header_extension_parse_dependency_desc((char *)data, size, 1, (uint8_t *)&dd, &sizedd);
 
@@ -92,12 +93,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 	janus_h264_is_keyframe(payload, plen);
 
 	/* VP8 targets */
+	gboolean m = FALSE;
 	uint16_t picid = 0;
 	uint8_t tlzi = 0, tid = 0, ybit = 0, keyidx = 0;
 	janus_vp8_simulcast_context vp8_context;
 	memset(&vp8_context, 0, sizeof(janus_vp8_simulcast_context));
 	janus_vp8_is_keyframe(payload, plen);
-	janus_vp8_parse_descriptor(payload, plen, &picid, &tlzi, &tid, &ybit, &keyidx);
+	janus_vp8_parse_descriptor(payload, plen, &m, &picid, &tlzi, &tid, &ybit, &keyidx);
 	janus_vp8_simulcast_descriptor_update(copy_payload, plen, &vp8_context, TRUE);
 
 	/* VP9 targets */

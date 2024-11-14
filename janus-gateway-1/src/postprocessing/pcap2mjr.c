@@ -88,21 +88,22 @@ static void janus_p2m_handle_signal(int signum) {
 }
 
 /* Supported command-line arguments */
+static int64_t ssrc64 = 0;
 static uint32_t ssrc = 0;
 static const char *codec = NULL;
 static gboolean show_warnings = FALSE;
 static const char **paths = NULL;
 static GOptionEntry opt_entries[] = {
 	{ "codec", 'c', 0, G_OPTION_ARG_STRING, &codec, "Codec the recording will contain (e.g., opus, vp8, etc.)", NULL },
-	{ "ssrc", 's', 0, G_OPTION_ARG_INT, &ssrc, "SSRC of the packets in the pcap file to save (pass 0 to autodetect)", NULL },
+	{ "ssrc", 's', 0, G_OPTION_ARG_INT64, &ssrc64, "SSRC of the packets in the pcap file to save (pass 0 to autodetect)", NULL },
 	{ "warnings", 'w', 0, G_OPTION_ARG_NONE, &show_warnings, "Show warnings for skipped packets (e.g., not RTP or wrong SSRC)", NULL },
 	{ G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &paths, NULL, NULL },
-	{ NULL },
+	{ NULL, 0, 0, 0, NULL, NULL, NULL },
 };
 
 /* Main Code */
 int main(int argc, char *argv[]) {
-	janus_log_init(FALSE, TRUE, NULL);
+	janus_log_init(FALSE, TRUE, NULL, NULL);
 	atexit(janus_log_destroy);
 
 	JANUS_LOG(LOG_INFO, "Janus version: %d (%s)\n", janus_version, janus_version_string);
@@ -155,6 +156,7 @@ int main(int argc, char *argv[]) {
 		g_option_context_free(opts);
 		exit(1);
 	}
+	ssrc = (uint32_t)ssrc64;
 	JANUS_LOG(LOG_INFO, "[%s/%"SCNu32"] %s --> %s\n", codec, ssrc, source, destination);
 	if(ssrc == 0)
 		JANUS_LOG(LOG_WARN, "No SSRC provided, will try to autodetect an RTP stream\n");
@@ -206,6 +208,11 @@ int main(int argc, char *argv[]) {
 		sizeof(struct udphdr) + 12, pkt_size = 0;
 	gboolean header_written = FALSE;
 	gint64 start_ts = 0, pkt_ts = 0;
+    pcap2mjr_ethernet_header eth;
+    struct sll_header lcc;
+    struct ip v4;
+    struct ip6_hdr v6;
+    janus_pp_rtp_header rtp;
     while(working && (ret = pcap_next_ex(pcap, &header, &buffer)) >= 0) {
 		count++;
 		if(header->len != header->caplen) {
@@ -230,27 +237,27 @@ int main(int argc, char *argv[]) {
 		int protocol = 0;
 		if(link == DLT_EN10MB) {
 			/* Ethernet */
-			pcap2mjr_ethernet_header *eth = (pcap2mjr_ethernet_header *)temp;
-			protocol = ntohs(eth->type);
+			memcpy(&eth, temp, sizeof(pcap2mjr_ethernet_header));
+			protocol = ntohs(eth.type);
 			temp += sizeof(pcap2mjr_ethernet_header);
 			pkt_size -= sizeof(pcap2mjr_ethernet_header);
 		} else {
 			/* Linux Cooked Capture */
-			struct sll_header *lcc = (struct sll_header *)temp;
-			protocol = ntohs(lcc->sll_protocol);
+			memcpy(&lcc, temp, sizeof(struct sll_header));
+			protocol = ntohs(lcc.sll_protocol);
 			temp += sizeof(struct sll_header);
 			pkt_size -= sizeof(struct sll_header);
 		}
 		if(protocol == 0x0800) {
 			/* IPv4 */
-			struct ip *v4 = (struct ip *)temp;
-			protocol = v4->ip_p;
+			memcpy(&v4, temp, sizeof(struct ip));
+			protocol = v4.ip_p;
 			temp += sizeof(struct ip);
 			pkt_size -= sizeof(struct ip);
 		} else if(protocol == 0x86DD) {
 			/* IPv6 */
-			struct ip6_hdr *v6 = (struct ip6_hdr *)temp;
-			protocol = v6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
+			memcpy(&v6, temp, sizeof(struct ip6_hdr));
+			protocol = v6.ip6_ctlun.ip6_un1.ip6_un1_nxt;
 			temp += sizeof(struct ip6_hdr);
 			pkt_size -= sizeof(struct ip6_hdr);
 		} else {
@@ -269,14 +276,14 @@ int main(int argc, char *argv[]) {
 		temp += sizeof(struct udphdr);
 		pkt_size -= sizeof(struct udphdr);
 		/* Make sure this is an RTP packet */
-		janus_pp_rtp_header *rtp = (janus_pp_rtp_header *)temp;
-		if(rtp->version != 2 || (rtp->type >= 64 && rtp->type < 96)) {
+		memcpy(&rtp, temp, sizeof(janus_pp_rtp_header));
+		if(rtp.version != 2 || (rtp.type >= 64 && rtp.type < 96)) {
 			if(show_warnings) {
 				JANUS_LOG(LOG_WARN, "Not an RTP packet, skipping packet #%"SCNu32"\n", count);
 			}
 			continue;
 		}
-		pssrc = htonl(rtp->ssrc);
+		pssrc = htonl(rtp.ssrc);
 		if(ssrc == 0) {
 			ssrc = pssrc;
 			JANUS_LOG(LOG_INFO, "Autodetected SSRC %"SCNu32"\n", ssrc);

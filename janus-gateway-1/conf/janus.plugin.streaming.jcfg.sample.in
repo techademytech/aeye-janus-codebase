@@ -44,6 +44,9 @@
 # videoskew = true|false (whether the plugin should perform skew
 #		analisys and compensation on incoming video RTP stream, EXPERIMENTAL)
 # videosvc = true|false (whether the video will have SVC support; works only for VP9-SVC, default=false)
+# h264sps = if using H.264 as a video codec, value of the sprop-parameter-sets
+#		that would normally be sent via SDP, but that we'll use to instead
+#		manually ingest SPS and PPS packets via RTP for streams that miss it
 # collision = in case of collision (more than one SSRC hitting the same port), the plugin
 #		will discard incoming RTP packets with a new SSRC unless this many milliseconds
 #		passed, which would then change the current SSRC (0=disabled)
@@ -79,6 +82,13 @@
 # subscriber can customize the playout delay of incoming video streams,
 # assuming the browser supports the RTP extension in the first place.
 # playoutdelay_ext = true
+#
+# To allow mountpoints to negotiate the abs-capture-time RTP extension,
+# you can set the 'abscapturetime_src_ext_id' property to value in range 1..14 inclusive: this way, any
+# subscriber can receive the abs-capture-time of incoming RTP streams,
+# assuming the browser supports the RTP extension in the first place.
+# Incoming RTP stream should provide abs-capture-time exactly in the same header id.
+# abscapturetime_src_ext_id = 1
 #
 # The following options are only valid for the 'rtsp' type:
 # url = RTSP stream URL (only for restreaming RTSP)

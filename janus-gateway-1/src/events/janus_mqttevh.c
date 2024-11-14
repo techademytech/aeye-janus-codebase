@@ -482,7 +482,7 @@ static int janus_mqttevh_client_disconnect(janus_mqttevh_context *ctx) {
 	return MQTTAsync_disconnect(ctx->client, &options);
 }
 
-/* Callback for succesful MQTT disconnect */
+/* Callback for successful MQTT disconnect */
 static void janus_mqttevh_client_disconnect_success(void *context, MQTTAsync_successData *response) {
 	janus_mqttevh_client_disconnect_success_impl(context);
 }
@@ -551,7 +551,7 @@ static int janus_mqttevh_client_publish_message(janus_mqttevh_context *ctx, cons
 		case MQTTASYNC_OPERATION_INCOMPLETE:
 			break;
 		default:
-			JANUS_LOG(LOG_WARN, "FAILURE: MQTT EVH message propably not sent to topic %s on %s. Result %d\n", topic, ctx->connect.url, rc);
+			JANUS_LOG(LOG_WARN, "FAILURE: MQTT EVH message probably not sent to topic %s on %s. Result %d\n", topic, ctx->connect.url, rc);
 	}
 
 	return rc;
@@ -581,7 +581,7 @@ static int janus_mqttevh_client_publish_message5(janus_mqttevh_context *ctx, con
 		case MQTTASYNC_OPERATION_INCOMPLETE:
 			break;
 		default:
-			JANUS_LOG(LOG_WARN, "FAILURE: MQTT EVH message propably not sent to topic %s on %s. Result %d\n", topic, ctx->connect.url, rc);
+			JANUS_LOG(LOG_WARN, "FAILURE: MQTT EVH message probably not sent to topic %s on %s. Result %d\n", topic, ctx->connect.url, rc);
 	}
 
 	return rc;
@@ -637,15 +637,9 @@ static void janus_mqttevh_client_destroy_context(janus_mqttevh_context **ptr) {
 
 	if(ctx) {
 		MQTTAsync_destroy(&ctx->client);
-		if(ctx->publish.topic != NULL) {
-			g_free(ctx->publish.topic);
-		}
-		if(ctx->connect.username != NULL) {
-			g_free(ctx->connect.username);
-		}
-		if(ctx->connect.password != NULL) {
-			g_free(ctx->connect.password);
-		}
+		g_free(ctx->publish.topic);
+		g_free(ctx->connect.username);
+		g_free(ctx->connect.password);
 		g_free(ctx);
 		*ptr = NULL;
 	}

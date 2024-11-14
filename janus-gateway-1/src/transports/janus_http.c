@@ -33,14 +33,13 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netdb.h>
-#include <stdlib.h>
 
 #include <microhttpd.h>
-#ifdef HAVE_ENUM_MHD_RESULT
-	/* enum MHD_Result introduced in libmicrohttpd v0.9.71 */
-	typedef enum MHD_Result MHD_Result;
+#if defined(MHD_VERSION) && MHD_VERSION >= 0x00097002
+/* enum MHD_Result introduced in libmicrohttpd v0.9.71 */
+typedef enum MHD_Result janus_MHD_Result;
 #else
-	typedef int MHD_Result;
+typedef int janus_MHD_Result;
 #endif
 
 
@@ -150,6 +149,7 @@ typedef struct janus_http_msg {
 	char *acro;							/* Value of the Origin HTTP header, if any (needed for CORS) */
 	char *acrh;							/* Value of the Access-Control-Request-Headers HTTP header, if any (needed for CORS) */
 	char *acrm;							/* Value of the Access-Control-Request-Method HTTP header, if any (needed for CORS) */
+	char *xff;							/* Value of the X-Forwarded-For HTTP header, if any  */
 	char *contenttype;					/* Content-Type of the payload */
 	char *payload;						/* Payload of the message */
 	size_t len;							/* Length of the message in octets */
@@ -174,6 +174,7 @@ static void janus_http_msg_free(const janus_refcount *msg_ref) {
 	g_free(request->acro);
 	g_free(request->acrh);
 	g_free(request->acrm);
+	g_free(request->xff);
 	g_free(request->response);
 	g_free(request);
 }
@@ -257,24 +258,24 @@ static GSource *janus_http_request_timeout_create(janus_transport_session *ts, j
 	janus_http_request_timeout *t = (janus_http_request_timeout *)source;
 	t->ts = ts;
 	t->session = session;
-	g_source_set_ready_time(source, janus_get_monotonic_time() + timeout*G_USEC_PER_SEC);
+	g_source_set_ready_time(source, janus_get_monotonic_time_internal() + timeout*G_USEC_PER_SEC);
 	JANUS_LOG(LOG_DBG, "[%p] create (%d)\n", source, timeout);
 	return source;
 }
 
 
 /* Callback (libmicrohttpd) invoked when a new connection is attempted on the REST API */
-static MHD_Result janus_http_client_connect(void *cls, const struct sockaddr *addr, socklen_t addrlen);
+static janus_MHD_Result janus_http_client_connect(void *cls, const struct sockaddr *addr, socklen_t addrlen);
 /* Callback (libmicrohttpd) invoked when a new connection is attempted on the admin/monitor webserver */
-static MHD_Result janus_http_admin_client_connect(void *cls, const struct sockaddr *addr, socklen_t addrlen);
+static janus_MHD_Result janus_http_admin_client_connect(void *cls, const struct sockaddr *addr, socklen_t addrlen);
 /* Callback (libmicrohttpd) invoked when an HTTP message (GET, POST, OPTIONS, etc.) is available */
-static MHD_Result janus_http_handler(void *cls, struct MHD_Connection *connection,
+static janus_MHD_Result janus_http_handler(void *cls, struct MHD_Connection *connection,
 	const char *url, const char *method, const char *version, const char *upload_data, size_t *upload_data_size, void **ptr);
 /* Callback (libmicrohttpd) invoked when an admin/monitor HTTP message (GET, POST, OPTIONS, etc.) is available */
-static MHD_Result janus_http_admin_handler(void *cls, struct MHD_Connection *connection,
+static janus_MHD_Result janus_http_admin_handler(void *cls, struct MHD_Connection *connection,
 	const char *url, const char *method, const char *version, const char *upload_data, size_t *upload_data_size, void **ptr);
 /* Callback (libmicrohttpd) invoked when headers of an incoming HTTP message have been parsed */
-static MHD_Result janus_http_headers(void *cls, enum MHD_ValueKind kind, const char *key, const char *value);
+static janus_MHD_Result janus_http_headers(void *cls, enum MHD_ValueKind kind, const char *key, const char *value);
 /* Callback (libmicrohttpd) invoked when a request has been processed and can be freed */
 static void janus_http_request_completed(void *cls, struct MHD_Connection *connection,
 	void **con_cls, enum MHD_RequestTerminationCode toe);
@@ -283,9 +284,9 @@ static ssize_t janus_http_response_callback(void *cls, uint64_t pos, char *buf, 
 /* Worker to handle requests that are actually long polls */
 static int janus_http_notifier(janus_http_msg *msg);
 /* Helper to quickly send a success response */
-static MHD_Result janus_http_return_success(janus_transport_session *ts, char *payload);
+static janus_MHD_Result janus_http_return_success(janus_transport_session *ts, char *payload);
 /* Helper to quickly send an error response */
-static MHD_Result janus_http_return_error(janus_transport_session *ts, uint64_t session_id,
+static janus_MHD_Result janus_http_return_error(janus_transport_session *ts, uint64_t session_id,
 	const char *transaction, gint error, const char *format, ...) G_GNUC_PRINTF(5, 6);
 
 
@@ -304,6 +305,7 @@ static gboolean enforce_cors = FALSE;
 
 /* REST and Admin/Monitor ACL list */
 static GList *janus_http_access_list = NULL, *janus_http_admin_access_list = NULL;
+static gboolean janus_http_check_xff = FALSE, janus_http_admin_check_xff = FALSE;
 static janus_mutex access_list_mutex;
 static void janus_http_allow_address(const char *ip, gboolean admin) {
 	if(ip == NULL)
@@ -319,11 +321,15 @@ static void janus_http_allow_address(const char *ip, gboolean admin) {
 static gboolean janus_http_is_allowed(const char *ip, gboolean admin) {
 	if(ip == NULL)
 		return FALSE;
-	if(!admin && janus_http_access_list == NULL)
-		return TRUE;
-	if(admin && janus_http_admin_access_list == NULL)
-		return TRUE;
 	janus_mutex_lock(&access_list_mutex);
+	if(!admin && janus_http_access_list == NULL) {
+		janus_mutex_unlock(&access_list_mutex);
+		return TRUE;
+	}
+	if(admin && janus_http_admin_access_list == NULL) {
+		janus_mutex_unlock(&access_list_mutex);
+		return TRUE;
+	}
 	GList *temp = admin ? janus_http_admin_access_list : janus_http_access_list;
 	while(temp) {
 		const char *allowed = (const char *)temp->data;
@@ -685,15 +691,8 @@ int janus_http_init(janus_transport_callbacks *callback, const char *config_path
 				JANUS_LOG(LOG_FATAL, "Invalid base path %s (it should start with a /, e.g., /janus\n", item->value);
 				return -1;
 			}
-			ws_path = getenv("base_path");
-			if(ws_path == NULL)
-				ws_path = g_strdup(item->value);
-			
-			char *tVName = "iiht_b_path";
-			char *tVValue = "all_set";
-			setenv(tVName,tVValue,1);
-
-			if(strlen(ws_path) > 1 && ws_path[strlen(ws_path)-1] == '/') {
+			ws_path = g_strdup(item->value);
+			if(strnlen(ws_path, 1 + 1) > 1 && ws_path[strlen(ws_path)-1] == '/') {
 				/* Remove the trailing slash, it makes things harder when we parse requests later */
 				ws_path[strlen(ws_path)-1] = '\0';
 			}
@@ -708,7 +707,7 @@ int janus_http_init(janus_transport_callbacks *callback, const char *config_path
 				return -1;
 			}
 			admin_ws_path = g_strdup(item->value);
-			if(strlen(admin_ws_path) > 1 && admin_ws_path[strlen(admin_ws_path)-1] == '/') {
+			if(strnlen(admin_ws_path, 1 + 1) > 1 && admin_ws_path[strlen(admin_ws_path)-1] == '/') {
 				/* Remove the trailing slash, it makes things harder when we parse requests later */
 				admin_ws_path[strlen(admin_ws_path)-1] = '\0';
 			}
@@ -744,6 +743,10 @@ int janus_http_init(janus_transport_callbacks *callback, const char *config_path
 			}
 			g_strfreev(list);
 			list = NULL;
+			/* Check if we should use the value of X-Forwarded-For for checks too */
+			item = janus_config_get(config, config_general, janus_config_type_item, "acl_forwarded");
+			if(item && item->value)
+				janus_http_check_xff = janus_is_true(item->value);
 		}
 		item = janus_config_get(config, config_admin, janus_config_type_item, "admin_acl");
 		if(item && item->value) {
@@ -762,6 +765,10 @@ int janus_http_init(janus_transport_callbacks *callback, const char *config_path
 			}
 			g_strfreev(list);
 			list = NULL;
+			/* Check if we should use the value of X-Forwarded-For for checks too */
+			item = janus_config_get(config, config_general, janus_config_type_item, "admin_acl_forwarded");
+			if(item && item->value)
+				janus_http_admin_check_xff = janus_is_true(item->value);
 		}
 
 		/* Any custom value for the Access-Control-Allow-Origin header? */
@@ -1313,7 +1320,7 @@ plugin_response:
 }
 
 /* Connection notifiers */
-static MHD_Result janus_http_client_connect(void *cls, const struct sockaddr *addr, socklen_t addrlen) {
+static janus_MHD_Result janus_http_client_connect(void *cls, const struct sockaddr *addr, socklen_t addrlen) {
 	janus_network_address naddr;
 	janus_network_address_string_buffer naddr_buf;
 	if(janus_network_address_from_sockaddr((struct sockaddr *)addr, &naddr) != 0 ||
@@ -1332,7 +1339,7 @@ static MHD_Result janus_http_client_connect(void *cls, const struct sockaddr *ad
 	return MHD_YES;
 }
 
-static MHD_Result janus_http_admin_client_connect(void *cls, const struct sockaddr *addr, socklen_t addrlen) {
+static janus_MHD_Result janus_http_admin_client_connect(void *cls, const struct sockaddr *addr, socklen_t addrlen) {
 	janus_network_address naddr;
 	janus_network_address_string_buffer naddr_buf;
 	if(janus_network_address_from_sockaddr((struct sockaddr *)addr, &naddr) != 0 ||
@@ -1353,7 +1360,7 @@ static MHD_Result janus_http_admin_client_connect(void *cls, const struct sockad
 
 
 /* WebServer requests handler */
-static MHD_Result janus_http_handler(void *cls, struct MHD_Connection *connection,
+static janus_MHD_Result janus_http_handler(void *cls, struct MHD_Connection *connection,
 		const char *url, const char *method, const char *version,
 		const char *upload_data, size_t *upload_data_size, void **ptr) {
 	if(!g_atomic_int_get(&initialized) || g_atomic_int_get(&stopping))
@@ -1383,6 +1390,13 @@ static MHD_Result janus_http_handler(void *cls, struct MHD_Connection *connectio
 		janus_mutex_unlock(&messages_mutex);
 		*ptr = ts;
 		MHD_get_connection_values(connection, MHD_HEADER_KIND, &janus_http_headers, msg);
+		if(janus_http_check_xff && msg->xff) {
+			/* Any access limitation based on this IP address? */
+			if(!janus_http_is_allowed(msg->xff, FALSE)) {
+				JANUS_LOG(LOG_ERR, "IP %s is unauthorized to connect to the Janus API interface\n", msg->xff);
+				return MHD_NO;
+			}
+		}
 		ret = MHD_YES;
 		/* Notify handlers about this new transport instance */
 		if(notify_events && gateway->events_is_enabled()) {
@@ -1431,7 +1445,7 @@ static MHD_Result janus_http_handler(void *cls, struct MHD_Connection *connectio
 	}
 	/* Get path components */
 	if(strcasecmp(url, ws_path)) {
-		if(strlen(ws_path) > 1) {
+		if(strnlen(ws_path, 1 + 1) > 1) {
 			basepath = g_strsplit(url, ws_path, -1);
 		} else {
 			/* The base path is the web server too itself, we process the url itself */
@@ -1524,6 +1538,25 @@ static MHD_Result janus_http_handler(void *cls, struct MHD_Connection *connectio
 		janus_http_random_string(12, (char *)&tr);
 		root = json_object();
 		json_object_set_new(root, "janus", json_string("info"));
+		json_object_set_new(root, "transaction", json_string(tr));
+		goto parsingdone;
+	}
+	/* Or maybe a ping */
+	if(session_path != NULL && !strcmp(session_path, "ping")) {
+		/* The ping REST endpoint, if contacted through a GET, pings the Janus core */
+		if(strcasecmp(method, "GET")) {
+			response = MHD_create_response_from_buffer(0, NULL, MHD_RESPMEM_PERSISTENT);
+			janus_http_add_cors_headers(msg, response);
+			ret = MHD_queue_response(connection, MHD_HTTP_BAD_REQUEST, response);
+			MHD_destroy_response(response);
+			goto done;
+		}
+		/* Turn this into a fake "ping" request */
+		method = "POST";
+		char tr[12];
+		janus_http_random_string(12, (char *)&tr);
+		root = json_object();
+		json_object_set_new(root, "janus", json_string("ping"));
 		json_object_set_new(root, "transaction", json_string(tr));
 		goto parsingdone;
 	}
@@ -1751,7 +1784,7 @@ done:
 }
 
 /* Admin/monitor WebServer requests handler */
-static MHD_Result janus_http_admin_handler(void *cls, struct MHD_Connection *connection,
+static janus_MHD_Result janus_http_admin_handler(void *cls, struct MHD_Connection *connection,
 		const char *url, const char *method, const char *version,
 		const char *upload_data, size_t *upload_data_size, void **ptr) {
 	if(!g_atomic_int_get(&initialized) || g_atomic_int_get(&stopping))
@@ -1781,6 +1814,13 @@ static MHD_Result janus_http_admin_handler(void *cls, struct MHD_Connection *con
 		janus_mutex_unlock(&messages_mutex);
 		*ptr = ts;
 		MHD_get_connection_values(connection, MHD_HEADER_KIND, &janus_http_headers, msg);
+		if(janus_http_admin_check_xff && msg->xff) {
+			/* Any access limitation based on this IP address? */
+			if(!janus_http_is_allowed(msg->xff, TRUE)) {
+				JANUS_LOG(LOG_ERR, "IP %s is unauthorized to connect to the Janus API interface\n", msg->xff);
+				return MHD_NO;
+			}
+		}
 		ret = MHD_YES;
 		/* Notify handlers about this new transport instance */
 		if(notify_events && gateway->events_is_enabled()) {
@@ -1829,7 +1869,7 @@ static MHD_Result janus_http_admin_handler(void *cls, struct MHD_Connection *con
 	}
 	/* Get path components */
 	if(strcasecmp(url, admin_ws_path)) {
-		if(strlen(admin_ws_path) > 1) {
+		if(strnlen(admin_ws_path, 1 + 1) > 1) {
 			basepath = g_strsplit(url, admin_ws_path, -1);
 		} else {
 			/* The base path is the web server too itself, we process the url itself */
@@ -1922,6 +1962,25 @@ static MHD_Result janus_http_admin_handler(void *cls, struct MHD_Connection *con
 		json_object_set_new(root, "transaction", json_string(tr));
 		goto parsingdone;
 	}
+	/* Or maybe a ping */
+	if(session_path != NULL && !strcmp(session_path, "ping")) {
+		/* The ping REST endpoint, if contacted through a GET, pings the Janus core */
+		if(strcasecmp(method, "GET")) {
+			response = MHD_create_response_from_buffer(0, NULL, MHD_RESPMEM_PERSISTENT);
+			janus_http_add_cors_headers(msg, response);
+			ret = MHD_queue_response(connection, MHD_HTTP_BAD_REQUEST, response);
+			MHD_destroy_response(response);
+			goto done;
+		}
+		/* Turn this into a fake "ping" request */
+		method = "POST";
+		char tr[12];
+		janus_http_random_string(12, (char *)&tr);
+		root = json_object();
+		json_object_set_new(root, "janus", json_string("ping"));
+		json_object_set_new(root, "transaction", json_string(tr));
+		goto parsingdone;
+	}
 
 	/* Without a payload we don't know what to do */
 	if(!payload) {
@@ -2000,7 +2059,7 @@ done:
 	return ret;
 }
 
-static MHD_Result janus_http_headers(void *cls, enum MHD_ValueKind kind, const char *key, const char *value) {
+static janus_MHD_Result janus_http_headers(void *cls, enum MHD_ValueKind kind, const char *key, const char *value) {
 	janus_http_msg *request = (janus_http_msg *)cls;
 	JANUS_LOG(LOG_DBG, "%s: %s\n", key, value);
 	if(!request)
@@ -2019,6 +2078,8 @@ static MHD_Result janus_http_headers(void *cls, enum MHD_ValueKind kind, const c
 		request->acrm = g_strdup(value);
 	} else if(!strcasecmp(key, "Access-Control-Request-Headers")) {
 		request->acrh = g_strdup(value);
+	} else if(!strcasecmp(key, "X-Forwarded-For")) {
+		request->xff = g_strdup(value);
 	}
 	janus_refcount_decrease(&request->ref);
 	return MHD_YES;
@@ -2147,7 +2208,7 @@ static int janus_http_notifier(janus_http_msg *msg) {
 }
 
 /* Helper to quickly send a success response */
-static MHD_Result janus_http_return_success(janus_transport_session *ts, char *payload) {
+static janus_MHD_Result janus_http_return_success(janus_transport_session *ts, char *payload) {
 	if(!payload) {
 		JANUS_LOG(LOG_ERR, "Invalid payload...\n");
 		return MHD_NO;
@@ -2175,7 +2236,7 @@ static MHD_Result janus_http_return_success(janus_transport_session *ts, char *p
 }
 
 /* Helper to quickly send an error response */
-static MHD_Result janus_http_return_error(janus_transport_session *ts, uint64_t session_id,
+static janus_MHD_Result janus_http_return_error(janus_transport_session *ts, uint64_t session_id,
 		const char *transaction, gint error, const char *format, ...) {
 	gchar *error_string = NULL;
 	gchar error_buf[512];

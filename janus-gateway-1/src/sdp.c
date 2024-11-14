@@ -100,7 +100,7 @@ janus_sdp *janus_sdp_preparse(void *ice_handle, const char *jsep_sdp, char *erro
 						return NULL;
 					}
 					if((m->type == JANUS_SDP_AUDIO || m->type == JANUS_SDP_VIDEO) && m->port > 0) {
-						if(strlen(a->value) > 16) {
+						if(strnlen(a->value, 16 + 1) > 16) {
 							JANUS_LOG(LOG_ERR, "[%"SCNu64"] mid on m-line #%d too large: (%zu > 16)\n",
 								handle->handle_id, m->index, strlen(a->value));
 							janus_sdp_destroy(parsed_sdp);
@@ -161,10 +161,10 @@ int janus_sdp_process_remote(void *ice_handle, janus_sdp *remote_sdp, gboolean r
 		if(a && a->name && a->value) {
 			if(!strcasecmp(a->name, "fingerprint")) {
 				JANUS_LOG(LOG_VERB, "[%"SCNu64"] Fingerprint (global) : %s\n", handle->handle_id, a->value);
-				if(strcasestr(a->value, "sha-256 ") == a->value) {
+				if(!strncasecmp(a->value, "sha-256 ", strlen("sha-256 "))) {
 					rhashing = g_strdup("sha-256");
 					rfingerprint = g_strdup(a->value + strlen("sha-256 "));
-				} else if(strcasestr(a->value, "sha-1 ") == a->value) {
+				} else if(!strncasecmp(a->value, "sha-1 ", strlen("sha-1 "))) {
 					JANUS_LOG(LOG_WARN, "[%"SCNu64"]  Hashing algorithm not the one we expected (sha-1 instead of sha-256), but that's ok\n", handle->handle_id);
 					rhashing = g_strdup("sha-1");
 					rfingerprint = g_strdup(a->value + strlen("sha-1 "));
@@ -228,6 +228,13 @@ int janus_sdp_process_remote(void *ice_handle, janus_sdp *remote_sdp, gboolean r
 				if(m->ptypes != NULL) {
 					g_list_free(medium->payload_types);
 					medium->payload_types = g_list_copy(m->ptypes);
+					if(pc->payload_types == NULL)
+						pc->payload_types = g_hash_table_new(NULL, NULL);
+					GList *temp = medium->payload_types;
+					while(temp) {
+						g_hash_table_insert(pc->payload_types, temp->data, temp->data);
+						temp = temp->next;
+					}
 				}
 			} else {
 				/* Medium rejected? */
@@ -298,25 +305,20 @@ int janus_sdp_process_remote(void *ice_handle, janus_sdp *remote_sdp, gboolean r
 			if(a->name && a->value) {
 				if(!strcasecmp(a->name, "mid")) {
 					/* Found mid attribute */
-					if(strlen(a->value) > 16) {
+					if(strnlen(a->value, 16 + 1) > 16) {
 						JANUS_LOG(LOG_ERR, "[%"SCNu64"] mid on m-line #%d too large: (%zu > 16)\n",
 							handle->handle_id, m->index, strlen(a->value));
 						return -2;
 					}
-					gboolean mid_changed = FALSE;
-					if(medium->mid != NULL && strcasecmp(medium->mid, a->value))
-						mid_changed = TRUE;
-					if(medium->mid == NULL || mid_changed) {
-						char *old_mid = mid_changed ? medium->mid : NULL;
+					if(medium->mid != NULL && strcasecmp(medium->mid, a->value)) {
+						JANUS_LOG(LOG_WARN, "[%"SCNu64"] mid on m-line #%d changed (%s --> %s), ignoring new value\n",
+							handle->handle_id, m->index, medium->mid, a->value);
+					} else if(medium->mid == NULL) {
 						medium->mid = g_strdup(a->value);
 						if(!g_hash_table_lookup(pc->media_bymid, medium->mid)) {
 							g_hash_table_insert(pc->media_bymid, g_strdup(medium->mid), medium);
 							janus_refcount_increase(&medium->ref);
 						}
-						/* If the mid for this m-line changed, get rid of the mapping */
-						if(mid_changed && old_mid != NULL)
-							g_hash_table_remove(pc->media_bymid, old_mid);
-						g_free(old_mid);
 					}
 					if(handle->pc_mid == NULL)
 						handle->pc_mid = g_strdup(a->value);
@@ -342,12 +344,12 @@ int janus_sdp_process_remote(void *ice_handle, janus_sdp *remote_sdp, gboolean r
 					}
 				} else if(!strcasecmp(a->name, "fingerprint")) {
 					JANUS_LOG(LOG_VERB, "[%"SCNu64"] Fingerprint (local) : %s\n", handle->handle_id, a->value);
-					if(strcasestr(a->value, "sha-256 ") == a->value) {
+					if(!strncasecmp(a->value, "sha-256 ", strlen("sha-256 "))) {
 						g_free(rhashing);	/* FIXME We're overwriting the global one, if any */
 						rhashing = g_strdup("sha-256");
 						g_free(rfingerprint);	/* FIXME We're overwriting the global one, if any */
 						rfingerprint = g_strdup(a->value + strlen("sha-256 "));
-					} else if(strcasestr(a->value, "sha-1 ") == a->value) {
+					} else if(!strncasecmp(a->value, "sha-1 ", strlen("sha-1 "))) {
 						JANUS_LOG(LOG_WARN, "[%"SCNu64"]  Hashing algorithm not the one we expected (sha-1 instead of sha-256), but that's ok\n", handle->handle_id);
 						g_free(rhashing);	/* FIXME We're overwriting the global one, if any */
 						rhashing = g_strdup("sha-1");
@@ -388,18 +390,10 @@ int janus_sdp_process_remote(void *ice_handle, janus_sdp *remote_sdp, gboolean r
 				/* Missing mandatory information, failure... */
 				JANUS_LOG(LOG_ERR, "[%"SCNu64"] SDP missing mandatory information\n", handle->handle_id);
 				JANUS_LOG(LOG_ERR, "[%"SCNu64"] %p, %p, %p, %p\n", handle->handle_id, ruser, rpass, rfingerprint, rhashing);
-				if(ruser)
-					g_free(ruser);
-				ruser = NULL;
-				if(rpass)
-					g_free(rpass);
-				rpass = NULL;
-				if(rhashing)
-					g_free(rhashing);
-				rhashing = NULL;
-				if(rfingerprint)
-					g_free(rfingerprint);
-				rfingerprint = NULL;
+				g_free(ruser);
+				g_free(rpass);
+				g_free(rhashing);
+				g_free(rfingerprint);
 				return -2;
 			}
 			/* If we received the ICE credentials for the first time, enforce them */
@@ -591,9 +585,21 @@ int janus_sdp_process_remote(void *ice_handle, janus_sdp *remote_sdp, gboolean r
 						} else {
 							rtx = TRUE;
 							janus_flags_set(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_RFC4588_RTX);
-							if(medium->rtx_payload_types == NULL)
-								medium->rtx_payload_types = g_hash_table_new(NULL, NULL);
-							g_hash_table_insert(medium->rtx_payload_types, GINT_TO_POINTER(ptype), GINT_TO_POINTER(rtx_ptype));
+							if(pc->rtx_payload_types == NULL)
+								pc->rtx_payload_types = g_hash_table_new(NULL, NULL);
+							if(pc->rtx_payload_types_rev == NULL)
+								pc->rtx_payload_types_rev = g_hash_table_new(NULL, NULL);
+							int map_pt = GPOINTER_TO_INT(g_hash_table_lookup(pc->rtx_payload_types_rev, GINT_TO_POINTER(rtx_ptype)));
+							if(map_pt && map_pt != ptype) {
+								JANUS_LOG(LOG_WARN, "[%"SCNu64"] RTX payload type %d already mapped to %d, skipping fmtp/apt mapping with %d...\n",
+									handle->handle_id, rtx_ptype, map_pt, ptype);
+							} else {
+								g_hash_table_insert(pc->rtx_payload_types, GINT_TO_POINTER(ptype), GINT_TO_POINTER(rtx_ptype));
+								g_hash_table_insert(pc->rtx_payload_types_rev, GINT_TO_POINTER(rtx_ptype), GINT_TO_POINTER(ptype));
+								if(medium->rtx_payload_types == NULL)
+									medium->rtx_payload_types = g_hash_table_new(NULL, NULL);
+								g_hash_table_insert(medium->rtx_payload_types, GINT_TO_POINTER(ptype), GINT_TO_POINTER(rtx_ptype));
+							}
 						}
 					}
 				} else if(!strcasecmp(a->name, "rtpmap")) {
@@ -605,12 +611,21 @@ int janus_sdp_process_remote(void *ice_handle, janus_sdp *remote_sdp, gboolean r
 								cr++;
 								uint32_t clock_rate = 0;
 								if(janus_string_to_uint32(cr, &clock_rate) == 0) {
+									if(pc->clock_rates == NULL)
+										pc->clock_rates = g_hash_table_new(NULL, NULL);
 									if(medium->clock_rates == NULL)
 										medium->clock_rates = g_hash_table_new(NULL, NULL);
-									g_hash_table_insert(medium->clock_rates, GINT_TO_POINTER(ptype), GUINT_TO_POINTER(clock_rate));
-									/* Check if opus/red is negotiated */
-									if(strstr(a->value, "red/48000/2"))
-										medium->opusred_pt = ptype;
+									uint32_t map_cr = GPOINTER_TO_UINT(g_hash_table_lookup(pc->clock_rates, GINT_TO_POINTER(ptype)));
+									if(map_cr && map_cr != clock_rate) {
+										JANUS_LOG(LOG_WARN, "[%"SCNu64"] Payload type %d already mapped to clock rate %d, skipping rtpmap mapping with %d...\n",
+											handle->handle_id, ptype, map_cr, clock_rate);
+									} else {
+										g_hash_table_insert(pc->clock_rates, GINT_TO_POINTER(ptype), GUINT_TO_POINTER(clock_rate));
+										g_hash_table_insert(medium->clock_rates, GINT_TO_POINTER(ptype), GUINT_TO_POINTER(clock_rate));
+										/* Check if opus/red is negotiated */
+										if(strstr(a->value, "red/48000/2"))
+											medium->opusred_pt = ptype;
+									}
 								}
 							}
 						}
@@ -634,11 +649,15 @@ int janus_sdp_process_remote(void *ice_handle, janus_sdp *remote_sdp, gboolean r
 						JANUS_LOG(LOG_INFO, "[%"SCNu64"] %s SSRC (#%d) on mline #%d changed: %"SCNu32" --> %"SCNu32"\n",
 							handle->handle_id, m->type == JANUS_SDP_VIDEO ? "Video" : "Audio",
 							vindex, m->index, medium->ssrc_peer[vindex], medium->ssrc_peer_new[vindex]);
-						/* FIXME Reset the RTCP context */
+						/* Reset the RTCP context */
 						janus_mutex_lock(&medium->mutex);
 						if(medium->rtcp_ctx[vindex]) {
 							memset(medium->rtcp_ctx[vindex], 0, sizeof(*medium->rtcp_ctx[vindex]));
 							medium->rtcp_ctx[vindex]->tb = (m->type == JANUS_SDP_VIDEO ? 90000 : 48000);	/* May change later */;
+							medium->rtcp_ctx[vindex]->in_link_quality = 100;
+							medium->rtcp_ctx[vindex]->in_media_link_quality = 100;
+							medium->rtcp_ctx[vindex]->out_link_quality = 100;
+							medium->rtcp_ctx[vindex]->out_media_link_quality = 100;
 						}
 						if(medium->last_seqs[vindex])
 							janus_seq_list_free(&medium->last_seqs[vindex]);
@@ -676,10 +695,18 @@ int janus_sdp_process_remote(void *ice_handle, janus_sdp *remote_sdp, gboolean r
 				if((medium->ssrc_peer[1] || medium->rid[1] != NULL) && medium->rtcp_ctx[1] == NULL) {
 					medium->rtcp_ctx[1] = g_malloc0(sizeof(rtcp_context));
 					medium->rtcp_ctx[1]->tb = 90000;
+					medium->rtcp_ctx[1]->in_link_quality = 100;
+					medium->rtcp_ctx[1]->in_media_link_quality = 100;
+					medium->rtcp_ctx[1]->out_link_quality = 100;
+					medium->rtcp_ctx[1]->out_media_link_quality = 100;
 				}
 				if((medium->ssrc_peer[2] || medium->rid[rids_hml ? 2 : 0] != NULL) && medium->rtcp_ctx[2] == NULL) {
 					medium->rtcp_ctx[2] = g_malloc0(sizeof(rtcp_context));
 					medium->rtcp_ctx[2]->tb = 90000;
+					medium->rtcp_ctx[2]->in_link_quality = 100;
+					medium->rtcp_ctx[2]->in_media_link_quality = 100;
+					medium->rtcp_ctx[2]->out_link_quality = 100;
+					medium->rtcp_ctx[2]->out_media_link_quality = 100;
 				}
 			}
 			if(m->type == JANUS_SDP_VIDEO && medium->rtx_payload_types && m->ptypes) {
@@ -693,6 +720,7 @@ int janus_sdp_process_remote(void *ice_handle, janus_sdp *remote_sdp, gboolean r
 						/* We have a payload type that is both a codec and rtx, get rid of it */
 						JANUS_LOG(LOG_WARN, "[%"SCNu64"] Removing duplicate payload type %d\n", handle->handle_id, ptype);
 						janus_sdp_remove_payload_type(remote_sdp, medium->mindex, ptype);
+						g_hash_table_remove(pc->clock_rates, GINT_TO_POINTER(ptype));
 						g_hash_table_remove(medium->clock_rates, GINT_TO_POINTER(ptype));
 					}
 					tempP = tempP->next;
@@ -759,12 +787,15 @@ int janus_sdp_process_local(void *ice_handle, janus_sdp *remote_sdp, gboolean up
 			if(a->name && a->value) {
 				if(!strcasecmp(a->name, "mid")) {
 					/* Found mid attribute */
-					if(strlen(a->value) > 16) {
+					if(strnlen(a->value, 16 + 1) > 16) {
 						JANUS_LOG(LOG_ERR, "[%"SCNu64"] mid on m-line #%d too large: (%zu > 16)\n",
 							handle->handle_id, m->index, strlen(a->value));
 						return -2;
 					}
-					if(medium->mid == NULL) {
+					if(medium->mid != NULL && strcasecmp(medium->mid, a->value)) {
+						JANUS_LOG(LOG_WARN, "[%"SCNu64"] mid on m-line #%d changed (%s --> %s), ignoring new value\n",
+							handle->handle_id, m->index, medium->mid, a->value);
+					} else if(medium->mid == NULL) {
 						medium->mid = g_strdup(a->value);
 						if(!g_hash_table_lookup(pc->media_bymid, medium->mid)) {
 							g_hash_table_insert(pc->media_bymid, g_strdup(medium->mid), medium);
@@ -844,7 +875,7 @@ int janus_sdp_process_local(void *ice_handle, janus_sdp *remote_sdp, gboolean up
 			medium->mstid = NULL;
 		}
 		if(m->direction == JANUS_SDP_INACTIVE) {
-			/* FIXME Reset the local SSRCs and RTCP context */
+			/* Reset the local SSRCs and RTCP context */
 			if(medium->ssrc != 0)
 				g_hash_table_remove(pc->media_byssrc, GINT_TO_POINTER(medium->ssrc));
 			medium->ssrc = 0;
@@ -857,6 +888,10 @@ int janus_sdp_process_local(void *ice_handle, janus_sdp *remote_sdp, gboolean up
 					int tb = medium->rtcp_ctx[vindex]->tb;
 					memset(medium->rtcp_ctx[vindex], 0, sizeof(janus_rtcp_context));
 					medium->rtcp_ctx[vindex]->tb = tb;
+					medium->rtcp_ctx[vindex]->in_link_quality = 100;
+					medium->rtcp_ctx[vindex]->in_media_link_quality = 100;
+					medium->rtcp_ctx[vindex]->out_link_quality = 100;
+					medium->rtcp_ctx[vindex]->out_media_link_quality = 100;
 				}
 			}
 		} else if(m->type != JANUS_SDP_APPLICATION) {
@@ -1280,7 +1315,7 @@ int janus_sdp_parse_ssrc(void *m, const char *ssrc_attr, int video) {
 int janus_sdp_anonymize(janus_sdp *anon) {
 	if(anon == NULL)
 		return -1;
-	int audio = 0, video = 0, data = 0;
+	int data = 0;
 		/* o= */
 	if(anon->o_addr != NULL) {
 		g_free(anon->o_addr);
@@ -1313,10 +1348,8 @@ int janus_sdp_anonymize(janus_sdp *anon) {
 	while(temp) {
 		janus_sdp_mline *m = (janus_sdp_mline *)temp->data;
 		if(m->type == JANUS_SDP_AUDIO && m->port > 0) {
-			audio++;
 			m->port = 9;
 		} else if(m->type == JANUS_SDP_VIDEO && m->port > 0) {
-			video++;
 			m->port = 9;
 		} else if(m->type == JANUS_SDP_APPLICATION && m->port > 0) {
 			if(m->proto != NULL && (!strcasecmp(m->proto, "DTLS/SCTP") || !strcasecmp(m->proto, "UDP/DTLS/SCTP"))) {
@@ -1450,7 +1483,7 @@ char *janus_sdp_merge(void *ice_handle, janus_sdp *anon, gboolean offer) {
 	g_free(anon->c_addr);
 	anon->c_addr = NULL;
 	/* bundle: add new global attribute */
-	char buffer[8192], buffer_part[512];
+	char buffer[8192], buffer_part[2048];
 	buffer[0] = '\0';
 	buffer_part[0] = '\0';
 	g_snprintf(buffer, sizeof(buffer), "BUNDLE");
@@ -1490,7 +1523,7 @@ char *janus_sdp_merge(void *ice_handle, janus_sdp *anon, gboolean offer) {
 	anon->attributes = g_list_insert_before(anon->attributes, first, a);
 	/* ICE Full or Lite? */
 	if(janus_ice_is_ice_lite_enabled()) {
-		/* Janus is acting in ICE Lite mode, advertize this */
+		/* Janus is acting in ICE Lite mode, advertise this */
 		a = janus_sdp_attribute_create("ice-lite", NULL);
 		anon->attributes = g_list_insert_before(anon->attributes, first, a);
 	}
@@ -1520,6 +1553,11 @@ char *janus_sdp_merge(void *ice_handle, janus_sdp *anon, gboolean offer) {
 		g_free(m->c_addr);
 		m->c_ipv4 = ipv4;
 		m->c_addr = g_strdup(janus_get_public_ip(0));
+		/* a=mid */
+		if(medium->mid) {
+			a = janus_sdp_attribute_create("mid", "%s", medium->mid);
+			m->attributes = g_list_insert_before(m->attributes, first, a);
+		}
 		/* Check if we need to refuse the media or not */
 		if(m->type == JANUS_SDP_AUDIO || m->type == JANUS_SDP_VIDEO) {
 			/* Audio/Video */
@@ -1604,11 +1642,6 @@ char *janus_sdp_merge(void *ice_handle, janus_sdp *anon, gboolean offer) {
 			temp = temp->next;
 			continue;
 		}
-		/* a=mid */
-		if(medium->mid) {
-			a = janus_sdp_attribute_create("mid", "%s", medium->mid);
-			m->attributes = g_list_insert_before(m->attributes, first, a);
-		}
 		if(m->type == JANUS_SDP_APPLICATION) {
 			if(!strcasecmp(m->proto, "UDP/DTLS/SCTP"))
 				janus_flags_set(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_NEW_DATACHAN_SDP);
@@ -1659,7 +1692,8 @@ char *janus_sdp_merge(void *ice_handle, janus_sdp *anon, gboolean offer) {
 				a = janus_sdp_attribute_create("ssrc", "%"SCNu32" cname:janus", medium->ssrc);
 				m->attributes = g_list_append(m->attributes, a);
 				if(medium->ssrc_rtx > 0 && m->type == JANUS_SDP_VIDEO &&
-						janus_flags_is_set(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_RFC4588_RTX)) {
+						janus_flags_is_set(&handle->webrtc_flags, JANUS_ICE_HANDLE_WEBRTC_RFC4588_RTX) &&
+						(m->direction == JANUS_SDP_DEFAULT || m->direction == JANUS_SDP_SENDRECV || m->direction == JANUS_SDP_SENDONLY)) {
 					/* Add rtx SSRC group to negotiate the RFC4588 stuff */
 					a = janus_sdp_attribute_create("ssrc", "%"SCNu32" cname:janus", medium->ssrc_rtx);
 					m->attributes = g_list_append(m->attributes, a);

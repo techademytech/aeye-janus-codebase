@@ -18,6 +18,11 @@
 	 (LIBAVCODEC_VERSION_MAJOR == major && \
 	  LIBAVCODEC_VERSION_MINOR >= minor))
 
+#define LIBAVFORMAT_VER_AT_LEAST(major, minor) \
+	(LIBAVFORMAT_VERSION_MAJOR > major || \
+	 (LIBAVFORMAT_VERSION_MAJOR == major && \
+	  LIBAVFORMAT_VERSION_MINOR >= minor))
+
 #if LIBAVCODEC_VER_AT_LEAST(51, 42)
 #define PIX_FMT_YUV420P AV_PIX_FMT_YUV420P
 #endif
@@ -33,6 +38,11 @@
 
 #if LIBAVCODEC_VER_AT_LEAST(57, 14)
 #define USE_CODECPAR
+#endif
+
+/* https://github.com/FFmpeg/FFmpeg/commit/cdba98bb80e2ab73d34659c610771b020afc6a77 */
+#if LIBAVCODEC_VER_AT_LEAST(59, 24)
+#define NEW_CHANNEL_LAYOUT
 #endif
 
 void janus_pp_setup_avformat(void);

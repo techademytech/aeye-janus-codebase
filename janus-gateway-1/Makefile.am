@@ -25,7 +25,7 @@ demosdir = $(datadir)/janus/demos
 demos_DATA = $(NULL)
 
 jsmodulesdir = $(datadir)/janus/javascript
-jsmodules_DATA = html/janus.js
+jsmodules_DATA = html/demos/janus.js
 
 %.sample: %.sample.in
 	$(MKDIR_P) $(@D)
@@ -51,7 +51,7 @@ CLEANFILES += conf/janus.jcfg.sample
 ##
 
 check-fuzzers: FORCE
-	CC=$(CC) SKIP_JANUS_BUILD=1 DLWS_WITH_OLD_API_WRAPPERS=1 LIB_FUZZING_ENGINE=fuzzers/standalone.o ./fuzzers/build.sh
+	CC=$(CC) SKIP_JANUS_BUILD=1 LIB_FUZZING_ENGINE=fuzzers/standalone.o ./fuzzers/build.sh
 	./fuzzers/run.sh rtcp_fuzzer out/rtcp_fuzzer_seed_corpus
 	./fuzzers/run.sh rtp_fuzzer out/rtp_fuzzer_seed_corpus
 	./fuzzers/run.sh sdp_fuzzer out/sdp_fuzzer_seed_corpus
@@ -72,30 +72,30 @@ endif
 ##
 
 if ENABLE_JAVASCRIPT_ES_MODULE
-jsmodules_DATA += npm/bundles/janus.es.js
+jsmodules_DATA += npm/dist/janus.es.js
 endif
 
 if ENABLE_JAVASCRIPT_UMD_MODULE
-jsmodules_DATA += npm/bundles/janus.umd.js
+jsmodules_DATA += npm/dist/janus.umd.js
 endif
 
 if ENABLE_JAVASCRIPT_IIFE_MODULE
-jsmodules_DATA += npm/bundles/janus.iife.js
+jsmodules_DATA += npm/dist/janus.iife.js
 endif
 
 if ENABLE_JAVASCRIPT_COMMON_JS_MODULE
-jsmodules_DATA += npm/bundles/janus.cjs.js
+jsmodules_DATA += npm/dist/janus.cjs.js
 endif
 
 EXTRA_DIST += $(jsmodules_DATA)
 
 if ENABLE_JAVASCRIPT_MODULES
 
-npm/node_modules/rollup/bin/rollup: npm/package.json
-	cd npm && $(NPM) install && touch node_modules/rollup/bin/rollup
+node_modules/rollup/dist/bin/rollup: package.json
+	$(NPM) install && touch node_modules/rollup/dist/bin/rollup
 
-npm/bundles/janus.%.js: html/janus.js npm/node_modules/rollup/bin/rollup npm/rollup.config.js npm/module.js
-	cd npm && $(NPM) run rollup -- --o $(patsubst npm/%,%,$@) --f $*
+npm/dist/janus.%.js: html/demos/janus.js node_modules/rollup/dist/bin/rollup npm/rollup.config.mjs npm/module.js
+	$(NPM) run rollup -- --o $@ --f $*
 
 endif
 
