@@ -1,6 +1,6 @@
 FROM ubuntu:20.04
 
-LABEL maintainer="Akshay Deshmukh"
+LABEL maintainer="Abhishek Khanna"
 LABEL description="Provides an image with Janus Gateway"
 
 ENV TZ=Asia/Indian
@@ -35,17 +35,14 @@ RUN apt-get install -y \
     pip \
     sudo
 
-
+RUN pip3 install meson
+RUN apt-get install build-essential libssl-dev
 
 RUN pip install meson ninja \
     && cd ~ \
     && git clone https://gitlab.freedesktop.org/libnice/libnice \
     && cd libnice \
-    && git checkout tags/0.1.17 \
-    && ./autogen.sh --prefix=/usr\
-    && ./configure --disable-dependency-tracking --prefix=/usr  \
-    && make \
-    && sudo make install
+    && meson --prefix=/usr build && ninja -C build && sudo ninja -C build install
 
 
 
@@ -69,14 +66,12 @@ RUN cd ~ \
 RUN apt-get update -y
 RUN apt-get install -y ninja-build -y
 RUN apt-get install python3 python3-pip -y
-RUN pip3 install meson
-RUN apt-get install build-essential libssl-dev 
 
 
 RUN cd /tmp \
-    && wget https://github.com/Kitware/CMake/releases/download/v3.20.0/cmake-3.20.0.tar.gz \
-    && tar -zxvf cmake-3.20.0.tar.gz \
-    && cd cmake-3.20.0 \
+    && wget https://github.com/Kitware/CMake/releases/download/v3.22.1/cmake-3.22.1.tar.gz \
+    && tar -zxvf cmake-3.22.1.tar.gz \
+    && cd cmake-3.22.1 \
     && ./bootstrap \
     && make \
     && sudo make install
@@ -89,20 +84,22 @@ RUN add-apt-repository ppa:deadsnakes/ppa
 
 
 RUN cd ~ \
-    && git clone https://github.com/warmcat/libwebsockets.git \
+    && git clone https://libwebsockets.org/repo/libwebsockets \
     && cd libwebsockets \
-    && git checkout v4.2-stable \
+    && git checkout v4.3-stable \
     && mkdir build \
     && cd build \
-    && cmake -DCMAKE_INSTALL_PREFIX:PATH=/usr .. \
+    && cmake -DLWS_MAX_SMP=1 -DLWS_WITHOUT_EXTENSIONS=0 -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_C_FLAGS="-fpic" .. \
     && make \
-    && make install
+    && sudo make install
 
 
 RUN cd ~ \
     && git clone https://github.com/eclipse/paho.mqtt.c.git \
     && cd paho.mqtt.c \
-    && prefix=/usr make install
+    && prefix=/usr \
+    && make \
+    && sudo make install
 
 
 RUN apt-get update -y
@@ -116,16 +113,18 @@ RUN cd ~ \
     && git submodule update \
     && mkdir build && cd build \
     && cmake -DCMAKE_INSTALL_PREFIX=/usr .. \
-    && make && make install
+    && make && sudo make install
 
 RUN cd ~ \
     && git clone https://github.com/IIHT-Proctoring/janus-code-base.git \
-    && cd janus-code-base/janus-gateway-1/ \
+    && cd janus-code-base/ \
+    && git checkout nov-master-stable-14 \
+    && cd janus-gateway-1/ \
     && sh autogen.sh \
     && ./configure --prefix=/opt/janus --enable-mqtt --disable-docs \
     && make CFLAGS='-std=c99' \
-    && make install \
-    && make configs
+    && sudo make install \
+    && sudo make configs
 
 
 
